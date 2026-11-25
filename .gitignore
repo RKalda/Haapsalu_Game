@@ -14,3 +14,6 @@ assets/nature/pine_tree_01_4k.blend.zip
 
 # Local heritage reference photos; redistribution rights not established.
 data/raw/facades/heritage_local/
+
+# Mapillary source imagery, local metadata and credentials stay outside Git.
+data/raw/facades/mapillary/
