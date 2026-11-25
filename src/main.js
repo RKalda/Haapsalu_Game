@@ -213,8 +213,8 @@ async function run(){
   const forward=new THREE.Vector3(),vel=new THREE.Vector3();
   addEventListener('keydown',e=>{
     const k=e.key.toLowerCase();
+    if(e.target instanceof HTMLInputElement){if(k==='escape'){e.preventDefault();toggleMap(false)}return}
     if(['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright',' ','r','c','m','escape'].includes(k))e.preventDefault();
-    if(e.target instanceof HTMLInputElement){if(k==='escape')toggleMap(false);return}
     if(!e.repeat&&k==='m'){toggleMap(!mapOpen);return}
     if(mapOpen){if(k==='escape')toggleMap(false);return}
     if(!e.repeat){if(k==='r'){reset();force=steer=0}if(k==='c')mode=(mode+1)%3;if(k==='escape'){paused=!paused;keys.clear()}}
@@ -400,7 +400,7 @@ async function run(){
     $('gear').textContent=gear===-1?'R':String(gear);
     $('rpm').style.setProperty('--rpm',Math.round(rpm/6500*100)+'%');
     $('detail').textContent=paused?'PAUSED — ESC TO RESUME':modelNote+' / '+Math.round(rpm)+' RPM / '+fps+' FPS';
-    if(now-lastMap>120){mini();updateStreet();if(mapOpen)drawMap();lastMap=now}
+    if(now-lastMap>120){mini();updateStreet();lastMap=now}
     renderer.render(scene,camera);
   });
   window.haapsalu={world,body,vehicle:vc,manifest:m,reset};
