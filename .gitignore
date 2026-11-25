@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.vite/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+references/
+.DS_Store
+Thumbs.db
+assets/nature/pine_tree_01_4k.blend.zip
