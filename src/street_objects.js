@@ -82,10 +82,10 @@ export function addStreetObjects(scene,m,ground,THREE){
       mesh(g,poleGeo,poleMat,0,1.3,0,1,2.6,1);board(g,k[1],k[0],0,2.3,.06,.96,.60);
     }else if(o.kind==='crossing'){
       // A mapped crossing point need not have a zebra or sign. Mark only explicitly tagged zebra crossings.
-      if(!['marked','zebra','uncontrolled'].includes(o.crossing))continue;
+      if(!['marked','zebra'].includes(o.crossing))continue;
       const white=new THREE.MeshStandardMaterial({color:0xe4e4df,roughness:.85});
       // Signs only where mapped independently; zebra dimensions approximate.
-      for(let i=-3;i<=3;i++)mesh(g,boxGeo,white,i*.74,.08,0,.45,.025,2.2);
+      for(let i=-3;i<=3;i++)mesh(g,boxGeo,white,i*.74,.245,0,.45,.025,2.2);
     }else if(o.kind==='signal'){
       mesh(g,poleGeo,poleMat,0,1.7,0,1,3.4,1);
       mesh(g,boxGeo,dark,0,3.0,.10,.28,.78,.26);
@@ -135,4 +135,5 @@ export function addStreetObjects(scene,m,ground,THREE){
     board(g,selected.name,'shop',0,0,0,Math.min(10,selected.width*.65),Math.min(1.4,selected.height*.25));scene.add(g);
   }
   console.info('Street fixtures:',objects.length,'source records; sign placement is approximate where not mapped');
+  return (x,z)=>{for(const g of cells.values()){const c=g.userData.center;g.visible=Math.hypot(c[0]-x,c[1]-z)<450}};
 }

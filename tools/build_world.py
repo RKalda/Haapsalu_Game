@@ -16,7 +16,7 @@ from shapely.strtree import STRtree
 import mapbox_earcut
 from world_sources import BuildingInfo, measured_trees, aerial_tiles, foliage_sprites
 from photo_facades import PhotoFacades, frame as wall_frame
-from topography import compile_details
+from topography import compile_details, read_osm
 from aerial_facades import AerialFacades
 from street_objects import compile_street_objects, granite_setts, street_key
 
@@ -289,6 +289,25 @@ def main(report):
             trees.append([g.x,g.y])
         if prop.get("natural")=="wood" or prop.get("landuse")=="forest":
             forest.extend(parts(g,"Polygon"))
+    # Import any missing named Posti segments from the supplemental OSM response.
+    supplement=ROOT/"data/raw/topography/osm_street_objects.json"
+    if supplement.exists():
+        from shapely.ops import unary_union
+        existing=[LineString(r["points"]) for r in roads if street_key(r["name"])=="posti"]
+        occupied=unary_union(existing).buffer(2.0) if existing else None
+        added=0
+        for tags,rawgeom in read_osm(json.loads(supplement.read_text(encoding="utf-8"))):
+            if street_key(tags.get("name",""))!="posti" or tags.get("highway") not in ROAD_WIDTH:continue
+            if rawgeom.geom_type!="LineString":continue
+            g=geom_transform(tolocal,rawgeom).intersection(clip)
+            if occupied is not None:g=g.difference(occupied)
+            for line in parts(g,"LineString"):
+                if line.length<3:continue
+                pts=[[round(float(a),2),round(float(b),2)] for a,b in line.coords]
+                hw=tags["highway"]
+                roads.append(dict(points=pts,width=ROAD_WIDTH[hw],type=hw,name=tags["name"],surface="sett",ref="",lanes=tags.get("lanes",""),marking="no",sidewalk=tags.get("sidewalk",""),sidewalkLeft=tags.get("sidewalk:left",""),sidewalkRight=tags.get("sidewalk:right","")))
+                added+=1
+        report["postiSupplementalWays"]=added
     details=compile_details(ROOT,osm,tolocal,bounds,height,footprints,report)
     street_objects=compile_street_objects(ROOT,osm,tolocal,bounds,roads,report)
     report['postiSegments']=sum(len(r['points'])-1 for r in roads if street_key(r['name'])=='posti')

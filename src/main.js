@@ -291,7 +291,7 @@ async function run(){
   }
 
 
-  addStreetObjects(scene,m,ground,THREE);
+  const updateStreetFixtures=addStreetObjects(scene,m,ground,THREE);updateStreetFixtures(m.spawn[0],m.spawn[2]);
   status('Planting measured trees and rendering water…');
   // Alpha-tested botanical foliage cards. Each cell is culled separately.
   const leafMaterials=await Promise.all(Array.from({length:6},(_,i)=>imageLoader.loadAsync(root+'foliage_'+Math.floor(i/3)+'_'+i%3+'.png').then(t=>{
@@ -392,35 +392,6 @@ async function run(){
       `);
     };
     const water=new THREE.Mesh(geom(p,null,uv),waterMat);scene.add(water);
-  }
-
-  // Roadside lighting is intentionally approximate, limited to major mapped streets.
-  const lampPositions=[],lampGrid=new Set();
-  for(const r of m.roads){
-    if(!['primary','secondary','tertiary'].includes(r.type))continue;
-    let gap=15;
-    for(let i=1;i<r.points.length;i++){
-      const a=r.points[i-1],b=r.points[i],dx=b[0]-a[0],dz=b[1]-a[1],l=Math.hypot(dx,dz);
-      if(l<.01)continue;
-      while(gap<l){
-        const x=a[0]+dx*gap/l-dz/l*(r.width/2+1.8),z=a[1]+dz*gap/l+dx/l*(r.width/2+1.8);
-        const key=Math.round(x/22)+':'+Math.round(z/22);
-        if(!lampGrid.has(key)){lampGrid.add(key);lampPositions.push([x,ground(x,z),z,Math.atan2(dx,dz)])}
-        gap+=35;
-      }gap-=l;
-    }
-  }
-  if(lampPositions.length){
-    const poleMat=new THREE.MeshStandardMaterial({color:0x727a7e,metalness:.65,roughness:.48});
-    const bulbMat=new THREE.MeshStandardMaterial({color:0xdce2d7,roughness:.3});
-    const poles=new THREE.InstancedMesh(new THREE.CylinderGeometry(.045,.085,6.7,8),poleMat,lampPositions.length);
-    const arms=new THREE.InstancedMesh(new THREE.BoxGeometry(.055,.055,1.4),poleMat,lampPositions.length);
-    const lights=new THREE.InstancedMesh(new THREE.BoxGeometry(.26,.12,.55),bulbMat,lampPositions.length);
-    lampPositions.forEach(([x,y,z,yaw],i)=>{
-      dummy.scale.setScalar(1);dummy.rotation.set(0,0,0);dummy.position.set(x,y+3.35,z);dummy.updateMatrix();poles.setMatrixAt(i,dummy.matrix);
-      dummy.rotation.y=yaw+Math.PI/2;dummy.position.set(x-Math.cos(yaw)*.65,y+6.65,z+Math.sin(yaw)*.65);dummy.updateMatrix();arms.setMatrixAt(i,dummy.matrix);
-      dummy.position.set(x-Math.cos(yaw)*1.3,y+6.60,z+Math.sin(yaw)*1.3);dummy.updateMatrix();lights.setMatrixAt(i,dummy.matrix);
-    });scene.add(poles,arms,lights);
   }
 
   status('Loading BMW and vehicle physics…');
@@ -661,7 +632,7 @@ async function run(){
     camera.fov=lerp(camera.fov,mode===1?75:65+Math.min(12,speed*.23),.06);camera.updateProjectionMatrix();
     car.visible=mode!==1;
     sun.position.copy(car.position).add(new THREE.Vector3(-65,100,-40));sun.target.position.copy(car.position);
-    if(now-colliderTick>300){updateColliders(car.position.x,car.position.z);streamAerial(car.position.x,car.position.z);updateVegetation(car.position.x,car.position.z);colliderTick=now}
+    if(now-colliderTick>300){updateColliders(car.position.x,car.position.z);streamAerial(car.position.x,car.position.z);updateVegetation(car.position.x,car.position.z);updateStreetFixtures(car.position.x,car.position.z);colliderTick=now}
     frames++;elapsed+=dt;if(elapsed>.6){fps=Math.round(frames/elapsed);frames=0;elapsed=0}
     $('speed').textContent=String(Math.round(speed*3.6)).padStart(3,'0');
     $('gear').textContent=gear===-1?'R':String(gear);

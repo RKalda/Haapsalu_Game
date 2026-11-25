@@ -93,8 +93,8 @@ def compile_street_objects(root,osm,project,bounds,roads,report):
         if hw=='bus_stop' or p.get('public_transport')=='platform' and p.get('bus')=='yes':
             if not any(a['kind']=='bus' and math.hypot(a['x']-x,a['z']-z)<12 for a in result):add('bus',name,x,z,'OSM')
         if p.get('traffic_sign') and g.geom_type=='Point':add('sign',str(p['traffic_sign']),x,z,'OSM',direction=str(p.get('direction','')))
-        if hw=='stop':add('sign','stop',x,z,'OSM')
-        if hw=='give_way':add('sign','give_way',x,z,'OSM')
+        if hw=='stop' and p.get('traffic_sign'):add('sign','stop',x,z,'OSM')
+        if hw=='give_way' and p.get('traffic_sign'):add('sign','give_way',x,z,'OSM')
         if hw=='crossing':add('crossing','',x,z,'OSM',crossing=p.get('crossing',''))
         if hw=='traffic_signals':add('signal','',x,z,'OSM')
         if hw=='street_lamp':add('lamp','',x,z,'OSM')
