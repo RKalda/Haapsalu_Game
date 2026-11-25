@@ -32,9 +32,9 @@ def num(x):
     except (TypeError,ValueError):return None
 def value(row,key):
     return row.get(key) if key else None
-def features(path,bounds,report,tag):
+def features(path,bounds,report,tag,allowed_layers=None):
     for layer,kind in pyogrio.list_layers(path):
-        if not kind:continue
+        if not kind or (allowed_layers is not None and layer not in allowed_layers):continue
         info=pyogrio.read_info(path,layer=layer)
         if not info.get('crs'):continue
         crs=CRS.from_user_input(info['crs'])
@@ -56,11 +56,11 @@ class BuildingInfo:
         for path in paths:
             for names,geoms,cols in features(path,bounds,report,'buildingLayers'):
                 ek=field(names,['etak_id','etakid','etak_oid'],['etakid'])
-                ehr=field(names,['ehr_kood','ehr_code','ehrkood','ehr_id'],['ehrkood'])
+                ehr=field(names,['ehr_gid','ehr_kood','ehr_code','ehrkood','ehr_id'],['ehrkood'])
                 finish=field(names,['valisviimistlus','valisviimistluse_materjal','valisseina_valisviimistlus'],['valisviimist','fassaadimaterjal','fassaad'])
                 structure=field(names,['valisseina_materjal','valisseinad','seinamaterjal'],['valisseina','seinamaterjal'])
-                floors=field(names,['korruste_arv','maapealsete_korruste_arv','korruselisus','korruseid'],['maapeal','korrus'])
-                use=field(names,['kasutusotstarve','kasutusotstarbed','hoone_tyyp'],['kasutusotstar','hoonetyyp'])
+                floors=field(names,['max_korruste_arv','korruste_arv','maapealsete_korruste_arv','korruselisus','korruseid'],['maapeal','korrus'])
+                use=field(names,['kaos_nimetus_peamine','kaos_nimetus','kasutusotstarve','kasutusotstarbed','hoone_tyyp','nimetus','tyyp_tekst'],['kasutusotstar','hoonetyyp'])
                 year=field(names,['esmane_kasutus','esmase_kasutuse_aasta','ehitusaasta'],['esmasekasut','ehitusaasta'])
                 roof=field(names,['katusekate','katusekatte_materjal'],['katusekat'])
                 report.setdefault('buildingFieldMapping',[]).append(dict(etak=ek,ehr=ehr,finish=finish,structure=structure,floors=floors,use=use,year=year,roof=roof))
@@ -76,7 +76,7 @@ class BuildingInfo:
         self.tree=STRtree(self.geoms) if self.geoms else None
     def match(self,row,geometry):
         names=list(row)
-        for key,n in [('etak',field(names,['etak_id','etakid'],['etakid'])),('ehr',field(names,['ehr_kood','ehr_id'],['ehrkood']))]:
+        for key,n in [('etak',field(names,['etak_id','etakid'],['etakid'])),('ehr',field(names,['ehr_gid','ehr_kood','ehr_id'],['ehrkood']))]:
             v=identifier(value(row,n))
             if v and (key,v) in self.ids:
                 self.stats['idMatched']+=1;return self.rows[self.ids[key,v]]
@@ -113,19 +113,25 @@ class BuildingInfo:
 def measured_trees(root,bounds,cx,cy,ground,valid,blocked,report):
     paths=list((root/'data/raw/vegetation').rglob('*.gpkg'))
     if not paths:return None
-    result=[];stats=Counter()
+    result=[];stats=Counter();seen_ids=set()
     for path in paths:
-        for names,geoms,cols in features(path,bounds,report,'vegetationLayers'):
+        layers=pyogrio.list_layers(path)
+        point_layers={layer for layer,kind in layers if kind and ('keskpunkt' in layer.lower() or kind.lower().startswith('point'))}
+        report.setdefault('vegetationSkippedLayers',[]).extend(str(layer) for layer,kind in layers if point_layers and layer not in point_layers)
+        for names,geoms,cols in features(path,bounds,report,'vegetationLayers',point_layers or None):
             hk=field(names,['korgus','height','puu_korgus','h','height_m','tree_height'],['puukorgus','height','korgus'])
-            dk=field(names,['vora_diameeter','diameter','crown_diameter','diameeter','vora_laius','d'],['diameet','diameter','voralai','voralabi','labimoot','crownwidth','crowndiameter'])
+            dk=field(names,['puukroon','vora_diameeter','diameter','crown_diameter','diameeter','vora_laius','d'],['diameet','diameter','voralai','voralabi','labimoot','crownwidth','crowndiameter'])
             tk=field(names,['tyyp','liik','puuliik','class','type','puu_tyyp'],['puuliik','puutyyp','treeclass','okasleht','liigiryhm'])
-            report.setdefault('vegetationFieldMapping',[]).append(dict(height=hk,diameter=dk,type=tk))
+            idk=field(names,['puu_id','tree_id'])
+            report.setdefault('vegetationFieldMapping',[]).append(dict(height=hk,diameter=dk,type=tk,id=idk))
             if not hk:continue
             for i,g in enumerate(geoms):
                 if g is None or g.is_empty:continue
                 row={n:c[i] for n,c in zip(names,cols)}
                 h=num(value(row,hk));d=num(value(row,dk))
                 if h is None or not 1.8<=h<=45:stats['invalidHeight']+=1;continue
+                tid=identifier(value(row,idk))
+                if tid and tid in seen_ids:stats['duplicateId']+=1;continue
                 pt=g if g.geom_type=='Point' else g.centroid
                 x,z=pt.x-cx,cy-pt.y
                 if not valid(x,z) or len(blocked.query(Point(x,z),predicate='intersects')):stats['excluded']+=1;continue
@@ -133,15 +139,14 @@ def measured_trees(root,bounds,cx,cy,ground,valid,blocked,report):
                 conifer=1 if any(s in t for s in ('okas','conifer','pine','spruce')) else 0
                 if not t or t.isdigit():stats['unknownType']+=1
                 if d is None or not .3<=d<=40:d=h*(.38 if conifer else .57);stats['estimatedDiameter']+=1
+                else:stats['measuredDiameter']+=1
+                if tid:seen_ids.add(tid)
                 result.append([round(x,2),round(ground(x,z),2),round(z,2),round(h,2),round(d,2),conifer]);stats['accepted']+=1
     report['vegetationStats']=dict(stats)
     if not result:raise RuntimeError('Vegetation GPKG supplied but no usable height field/trees. See public/world/build_report.json and adjust field mapping.')
-    # Retain measured trees; runtime uses distance-based LOD. De-duplicate very close detections.
-    unique={}
-    for t in sorted(result,key=lambda a:-a[3]):
-        unique.setdefault((round(t[0]/1.5),round(t[2]/1.5)),t)
-    report['measuredTrees']=len(unique)
-    return list(unique.values())
+    # Distinct measured IDs may legitimately stand close together; retain them.
+    report['measuredTrees']=len(result)
+    return result
 
 def aerial_tiles(paths,out,bounds,nx,nz,step=96,pixels=1536):
     """Independent per-terrain-chunk orthophotos, sampled without full-source arrays."""

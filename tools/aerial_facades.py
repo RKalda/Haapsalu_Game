@@ -30,17 +30,20 @@ def match_pose(image, corners, altitude, rgb, bounds, ground, metadata, origin):
     ih,iw=image.shape[:2];xmin,zmin,xmax,zmax=bounds;oh,ow=rgb.shape[1:]
     # Work in the local game coordinate frame (north = -Z).
     pixels=np.column_stack(((corners[:,0]-xmin)/(xmax-xmin)*(ow-1),(corners[:,1]-zmin)/(zmax-zmin)*(oh-1)))
-    margin=25;lo=np.maximum(np.floor(pixels.min(axis=0)).astype(int)-margin,0);hi=np.minimum(np.ceil(pixels.max(axis=0)).astype(int)+margin,[ow,oh])
+    margin=max(40,int(np.ptp(pixels[:,0])*.12),int(np.ptp(pixels[:,1])*.12));lo=np.maximum(np.floor(pixels.min(axis=0)).astype(int)-margin,0);hi=np.minimum(np.ceil(pixels.max(axis=0)).astype(int)+margin,[ow,oh])
     cw,ch=hi-lo
     if cw<70 or ch<70:return None,'footprint_outside'
     ortho=np.ascontiguousarray(np.moveaxis(rgb[:,lo[1]:hi[1],lo[0]:hi[0]],0,-1))
     target=cv2.cvtColor(ortho,cv2.COLOR_RGB2GRAY)
     src=cv2.cvtColor(image,cv2.COLOR_RGB2GRAY)
-    sift=cv2.SIFT_create(nfeatures=4500,contrastThreshold=.018)
+    clahe=cv2.createCLAHE(clipLimit=2.0,tileGridSize=(8,8))
+    src=clahe.apply(src);target=clahe.apply(target)
+    sift=cv2.SIFT_create(nfeatures=10000,contrastThreshold=.012)
     kp2,d2=sift.detectAndCompute(target,None)
     if d2 is None:return None,'no_ortho_features'
     photo=np.float32([[0,0],[iw-1,0],[iw-1,ih-1],[0,ih-1]])
     best=None
+    max_good=0;max_inliers=0
     for direction in (pixels,pixels[::-1]):
         for shift in range(4):
             dst=np.float32(np.roll(direction,shift,axis=0)-lo)
@@ -51,17 +54,19 @@ def match_pose(image, corners, altitude, rgb, bounds, ground, metadata, origin):
             kp1,d1=sift.detectAndCompute(warped,mask)
             if d1 is None or len(d1)<10:continue
             pairs=cv2.BFMatcher().knnMatch(d1,d2,k=2)
-            good=[a for pair in pairs if len(pair)==2 for a,b in [pair] if a.distance<.73*b.distance]
+            good=[a for pair in pairs if len(pair)==2 for a,b in [pair] if a.distance<.78*b.distance]
+            max_good=max(max_good,len(good))
             if len(good)<16:continue
             p1=np.float32([kp1[a.queryIdx].pt for a in good]);p2=np.float32([kp2[a.trainIdx].pt for a in good])
             correction,inlier=cv2.findHomography(p1,p2,cv2.RANSAC,2.5)
             if correction is None:continue
             keep=inlier.ravel().astype(bool);n=int(keep.sum())
-            if n<16:continue
+            max_inliers=max(max_inliers,n)
+            if n<16 or n/len(good)<.20:continue
             source=cv2.perspectiveTransform(p1[keep,None,:],np.linalg.inv(H))[:,0,:]
             targetxy=p2[keep]+lo
             if best is None or n>best[0]:best=(n,source,targetxy)
-    if best is None:return None,'no_geographic_alignment'
+    if best is None:return None,f'no_geographic_alignment (matches={max_good}, inliers={max_inliers})'
     n,uv,xy=best
     wx=xmin+xy[:,0]/(ow-1)*(xmax-xmin);wz=zmin+xy[:,1]/(oh-1)*(zmax-zmin)
     keep=np.ones(len(wx),bool)
@@ -105,7 +110,9 @@ class AerialFacades:
         data=metadata_for(root)
         for p in sorted((root/'data/raw/facades').glob('*.jpg')):
             match=re.search(r'ID(\d+)',p.name)
-            if not match or match[1] not in data:continue
+            if not match:continue
+            if match[1] not in data:
+                self.report['aerialPoseDiagnostics'].append({'id':match[1],'status':'missing_footprint_metadata'});continue
             m=data[match[1]]
             try:
                 with Image.open(p) as im:image=np.array(im.convert('RGB'))
