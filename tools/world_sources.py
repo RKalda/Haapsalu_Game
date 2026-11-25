@@ -68,6 +68,7 @@ class BuildingInfo:
                     if g is None or g.is_empty or g.geom_type not in ('Polygon','MultiPolygon'):continue
                     row={n:c[i] for n,c in zip(names,cols)}
                     entry={k:value(row,v) for k,v in dict(finish=finish,structure=structure,floors=floors,use=use,year=year,roof=roof).items()}
+                    entry['etak']=identifier(value(row,ek))
                     index=len(self.rows);self.rows.append(entry);self.geoms.append(g)
                     for key,name in [('etak',ek),('ehr',ehr)]:
                         v=identifier(value(row,name))
@@ -106,7 +107,8 @@ class BuildingInfo:
         else:floor_h=2.8
         use=norm(rec.get('use') or '')
         plain=any(x in use for x in ('kuur','garaaz','ladu','abihoone','angaar'))
-        return family,wall,floor_h,plain
+        bid=rec.get('etak') or identifier(value(row,field(list(row),['etak_id','etakid','etak_oid'],['etakid'])))
+        return family,wall,floor_h,plain,bid
 
 def measured_trees(root,bounds,cx,cy,ground,valid,blocked,report):
     paths=list((root/'data/raw/vegetation').rglob('*.gpkg'))

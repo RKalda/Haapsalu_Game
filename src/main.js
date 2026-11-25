@@ -23,7 +23,7 @@ async function run(){
   status('Loading map manifest…');
   let m;
   try{m=await (await data('manifest.json')).json()}catch(e){throw Error('World not compiled. Run python tools/build_world.py from the project folder. '+e.message)}
-  if(m.version!==3)throw Error('Old world data. Re-run python tools/build_world.py.');
+  if(m.version!==4)throw Error('Old world data. Re-run python tools/build_world.py.');
   const [xmin,zmin,xmax,zmax]=m.bounds;
   const H=new Float32Array(await (await data('height.dat')).arrayBuffer());
   if(H.length!==m.nx*m.nz)throw Error('Height grid size does not match manifest');
@@ -61,7 +61,7 @@ async function run(){
     const t=await new THREE.TextureLoader().loadAsync(root+name+'.jpg');t.colorSpace=THREE.SRGBColorSpace;
     t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());return t;
   }
-  const [grassTex,asphaltTex,pavingTex,...facadeTex]=await Promise.all(['grass','asphalt','paving','facade_plaster','facade_wood','facade_brick','roof','wall_plain'].map(repeatTexture));
+  const [grassTex,asphaltTex,pavingTex,...facadeTex]=await Promise.all(['grass','asphalt','paving','facade_plaster','facade_wood','facade_brick','roof','wall_plain','wood_plain','brick_plain'].map(repeatTexture));
   const terrainMat=new THREE.MeshStandardMaterial({map:texture,roughness:1});
   // Keep aerial geography but add fine-scale detail to green ground at street level.
   terrainMat.onBeforeCompile=s=>{
@@ -116,8 +116,12 @@ async function run(){
   async function normalTexture(name){
     const t=await imageLoader.loadAsync(root+name+'_normal.png');t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=4;return t;
   }
-  const normalMaps=await Promise.all(['facade_plaster','facade_wood','facade_brick','roof','wall_plain','asphalt','paving'].map(normalTexture));
+  const normalMaps=await Promise.all(['facade_plaster','facade_wood','facade_brick','roof','wall_plain','wood_plain','brick_plain','asphalt','paving'].map(normalTexture));
   const buildingMats=facadeTex.map((map,i)=>new THREE.MeshStandardMaterial({map,normalMap:normalMaps[i],normalScale:new THREE.Vector2(.48,.48),vertexColors:true,roughness:.83,side:THREE.DoubleSide}));
+  for(const file of m.facadeAtlases||[]){
+    const t=await imageLoader.loadAsync(root+file);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=4;
+    buildingMats.push(new THREE.MeshStandardMaterial({map:t,roughness:.9,side:THREE.DoubleSide,vertexColors:true}));
+  }
   const buildingChunks=await Promise.all(m.buildings.map(async b=>{
     const a=new Float32Array(await (await data(b.file)).arrayBuffer());
     if(a.length!==b.vertices*9)throw Error('Invalid building data: '+b.file);
@@ -183,7 +187,7 @@ async function run(){
   function roadMesh(vertices,map,color,offset){
     const p=new Float32Array(vertices),uv=new Float32Array(p.length/3*2);
     for(let i=0;i<p.length/3;i++){uv[i*2]=p[i*3]/3;uv[i*2+1]=p[i*3+2]/3}
-    const mesh=new THREE.Mesh(geom(p,null,uv),new THREE.MeshStandardMaterial({map,color,normalMap:map===asphaltTex?normalMaps[5]:map===pavingTex?normalMaps[6]:null,normalScale:new THREE.Vector2(.65,.65),roughness:1,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:offset,polygonOffsetUnits:offset}));
+    const mesh=new THREE.Mesh(geom(p,null,uv),new THREE.MeshStandardMaterial({map,color,normalMap:map===asphaltTex?normalMaps[7]:map===pavingTex?normalMaps[8]:null,normalScale:new THREE.Vector2(.65,.65),roughness:1,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:offset,polygonOffsetUnits:offset}));
     mesh.receiveShadow=true;scene.add(mesh);return mesh;
   }
   roadMesh(roadPositions,asphaltTex,0xffffff,-2);

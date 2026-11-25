@@ -11,3 +11,6 @@ references/
 .DS_Store
 Thumbs.db
 assets/nature/pine_tree_01_4k.blend.zip
+
+# Local heritage reference photos; redistribution rights not established.
+data/raw/facades/heritage_local/

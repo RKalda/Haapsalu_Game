@@ -15,6 +15,7 @@ from shapely.ops import transform as geom_transform
 from shapely.strtree import STRtree
 import mapbox_earcut
 from world_sources import BuildingInfo, measured_trees, aerial_tiles, foliage_sprites
+from photo_facades import PhotoFacades, frame as wall_frame
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "public/world"
@@ -72,13 +73,15 @@ def triangulate(face):
     ind=mapbox_earcut.triangulate_float64(np.ascontiguousarray(coords[:,keep]),np.cumsum([len(r) for r in rings],dtype=np.uint32))
     return coords[ind],abs(normal[2])/length
 def main(report):
-    p=argparse.ArgumentParser();p.add_argument("--step",type=float,default=4);p.add_argument("--texture-size",type=int,default=4096);p.add_argument("--tile-pixels",type=int,default=1280);p.add_argument("--no-hd-tiles",action="store_true")
+    p=argparse.ArgumentParser();p.add_argument("--step",type=float,default=4);p.add_argument("--texture-size",type=int,default=4096);p.add_argument("--tile-pixels",type=int,default=1280);p.add_argument("--no-hd-tiles",action="store_true");p.add_argument("--reuse-hd-tiles",action="store_true")
     args=p.parse_args()
     if args.step<2 or args.texture_size<256: raise ValueError("Invalid resolution")
     OUT.mkdir(parents=True,exist_ok=True)
     make_materials()
     foliage_sprites(OUT)
+    previous=json.loads((OUT/"manifest.json").read_text(encoding="utf-8")) if args.reuse_hd_tiles and (OUT/"manifest.json").exists() else {}
     (OUT/"manifest.json").unlink(missing_ok=True)
+    photos=PhotoFacades(ROOT,OUT)
     # Fixed local origin, north is -Z. Grid is aligned to the requested geographic bounding box.
     w,s,e,n=transform_bounds("EPSG:4326",CRS,*BBOX,densify_pts=21)
     metadata=BuildingInfo(ROOT,(w,s,e,n),report)
@@ -120,7 +123,9 @@ def main(report):
         if not mask.any(): raise RuntimeError("No orthophoto coverage in the requested map")
         rgb[:,~mask]=np.array([48,83,91],dtype=np.uint8)[:,None]
         Image.fromarray(np.moveaxis(rgb,0,-1)).save(OUT/"ground.jpg",quality=88)
-        tiles=[] if args.no_hd_tiles else aerial_tiles(ortho,OUT,(w,s,e,n),nx,nz,pixels=max(256,min(2048,args.tile_pixels)))
+        if args.reuse_hd_tiles and previous.get("nx")==nx and previous.get("nz")==nz and previous.get("bounds")==bounds and previous.get("aerialTiles") and all((OUT/t["file"]).is_file() for t in previous["aerialTiles"]) and not args.no_hd_tiles:
+            tiles=previous["aerialTiles"];print("Reusing",len(tiles),"existing aerial tiles")
+        else:tiles=[] if args.no_hd_tiles else aerial_tiles(ortho,OUT,(w,s,e,n),nx,nz,pixels=max(256,min(2048,args.tile_pixels)))
         report["aerialTiles"]=len(tiles)
         # Read real 3D faces directly from official file geodatabase.
         gdbs=list(ROOT.glob("*gdb.zip"))
@@ -159,7 +164,8 @@ def main(report):
                 # Approximate facade families. No source facade photographs are present.
                 family=1 if bh<9 and rng.random()<.65 else 2 if rng.random()<.28 else 0
                 row={name:col[gi] for name,col in zip(meta["fields"],fields)}
-                family,wall,floor_h,plain=metadata.style(row,g,bh,rng,wall,family)
+                family,wall,floor_h,plain,bid=metadata.style(row,g,bh,rng,wall,family)
+                family,wall=photos.style(bid,family,wall)
                 # Sample actual roof colour from the aerial image, not a random palette.
                 samples=[]
                 for pts,slope in faces:
@@ -171,7 +177,14 @@ def main(report):
                             samples.append(rgb[:,iy,ix]/255)
                 if samples:roof=np.clip(np.median(samples,axis=0),.12,.82)
                 key=(math.floor(x/500),math.floor(z/500))
-                for pts,slope in faces:
+                frames={}
+                for fi,(pts,slope) in enumerate(faces):
+                    if slope>.25:continue
+                    xyz=np.column_stack((pts[:,0]-cx,pts[:,2],cy-pts[:,1]))
+                    f=wall_frame(xyz,np.array([x,z]))
+                    if f is not None:frames[fi]=f
+                selected=photos.select(bid,frames,x,z)
+                for fi,(pts,slope) in enumerate(faces):
                     if slope>.5 and pts[:,2].max()<low+.15: continue
                     xyz=np.column_stack((pts[:,0]-cx,pts[:,2],cy-pts[:,1]))
                     isroof=slope>.35
@@ -184,7 +197,17 @@ def main(report):
                         a=horizontal[np.argmax(np.linalg.norm(horizontal-horizontal[0],axis=1))]-horizontal[0]
                         a=a/max(np.linalg.norm(a),1e-6)
                         uv=np.column_stack(((horizontal-horizontal[0])@a/2.7,(xyz[:,1]-low)/floor_h))
-                    kind=3 if isroof else family if bh>3.2 and not plain else 4
+                    f=frames.get(fi)
+                    kind=3 if isroof else [4,5,6][family]
+                    if not isroof and f is not None:
+                        _,width,fh,u,yy=f
+                        if not plain and width>=3.4 and fh>=2.8 and abs(fh/floor_h-round(fh/floor_h))<.33 and yy.min()<low+.8:
+                            kind=family
+                            bays=max(1,round(width/3.2))
+                            uv=np.column_stack(((u-u.min())/width*bays,(yy-yy.min())/floor_h))
+                        else:uv=np.column_stack((u/2.7,yy/2.8))
+                    if fi in selected:
+                        kind,uv=photos.uv(f,selected[fi]);col=np.ones_like(col)
                     chunks[key].append(np.column_stack((xyz,col,uv,np.full(len(pts),kind))).astype("<f4"))
                 footprints.append(box(bw-cx,cy-bn,be-cx,cy-bs));count+=1
         if not count: raise RuntimeError("No usable 3D buildings in this area; inspect GDB layers and CRS.")
@@ -192,6 +215,7 @@ def main(report):
         for (a,b),data in sorted(chunks.items()):
             name=f"b_{a}_{b}.dat";v=np.concatenate(data);v.tofile(OUT/name)
             buildings.append({"file":name,"center":[a*500+250,b*500+250],"vertices":len(v)})
+    photo_atlases=photos.save(report)
     report["buildingStats"]=dict(metadata.stats)
     raw=ROOT/"export.geojson"
     if is_pointer(raw): raise RuntimeError("OSM file is only an LFS pointer")
@@ -266,7 +290,7 @@ def main(report):
     if pine_asset:shutil.copyfile(pine,OUT/"pine.glb")
     report["pineAssetAvailable"]=pine_asset
     report["waterTriangles"]=len(water)//3
-    manifest={"version":3,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
+    manifest={"version":4,"facadeAtlases":photo_atlases,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
       "terrainCoverage":round(float(valid.mean()),4),"orthoCoverage":round(float(mask.mean()),4),
       "buildings":buildings,"buildingCount":count,"roads":roads,"trees":trees,"aerialTiles":tiles,"pineAsset":pine_asset,"water":water,"crossings":crossings,
       "spawn":[sx,height(sx,sz)+1.0,sz,yaw]}
@@ -296,25 +320,26 @@ def make_materials():
     def facade(name,src):
         im=src.copy();d=ImageDraw.Draw(im)
         # Repeating 2.7m x 2.8m facade module: glazing, frames, sill and shadow.
-        d.rectangle((150,105,362,367),fill=(65,65,61))
-        d.rectangle((157,110,355,359),fill=(215,213,199))
-        d.rectangle((170,123,342,346),fill=(38,55,64))
-        d.polygon([(170,123),(342,123),(342,180),(170,260)],fill=(72,90,102))
-        d.rectangle((250,123,260,346),fill=(185,183,169))
-        d.rectangle((170,220,342,229),fill=(185,183,169))
-        d.rectangle((145,350,368,368),fill=(168,166,150))
+        d.rectangle((174,142,338,350),fill=(78,76,68))
+        d.rectangle((180,147,332,343),fill=(224,220,204))
+        d.rectangle((190,157,322,331),fill=(52,65,72))
+        d.rectangle((252,157,260,331),fill=(212,208,191))
+        d.rectangle((190,222,322,230),fill=(212,208,191))
+        d.rectangle((169,341,343,350),fill=(165,160,144))
         im.save(OUT/(name+".jpg"),quality=92)
     plaster=texture("Plaster001",211,True)
     wood=texture("WoodSiding001",195,True)
     brick=texture("Bricks025",187,True)
     facade("facade_plaster",plaster);facade("facade_wood",wood);facade("facade_brick",brick)
     plaster.save(OUT/"wall_plain.jpg",quality=90)
+    wood.save(OUT/"wood_plain.jpg",quality=90)
+    brick.save(OUT/"brick_plain.jpg",quality=90)
     texture("RoofingTiles001",195,True).save(OUT/"roof.jpg",quality=90)
     texture("asphalt_03",80).save(OUT/"asphalt.jpg",quality=92)
     texture("PavingStones144",155).save(OUT/"paving.jpg",quality=90)
     texture("Grass001",110).save(OUT/"grass.jpg",quality=90)
     # Prefer supplied OpenGL normal maps. Otherwise derive a restrained detail normal.
-    for name,prefix in (("asphalt","asphalt_03"),("paving","PavingStones144"),("roof","RoofingTiles001"),("wall_plain","Plaster001"),("facade_plaster",None),("facade_wood",None),("facade_brick",None)):
+    for name,prefix in (("asphalt","asphalt_03"),("paving","PavingStones144"),("roof","RoofingTiles001"),("wall_plain","Plaster001"),("wood_plain","WoodSiding001"),("brick_plain","Bricks025"),("facade_plaster",None),("facade_wood",None),("facade_brick",None)):
         normal=None
         if prefix:
             for path in sorted((ROOT/"assets/textures").glob(prefix+"*.zip")):
