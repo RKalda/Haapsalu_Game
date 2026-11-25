@@ -114,9 +114,9 @@ def measured_trees(root,bounds,cx,cy,ground,valid,blocked,report):
     result=[];stats=Counter()
     for path in paths:
         for names,geoms,cols in features(path,bounds,report,'vegetationLayers'):
-            hk=field(names,['korgus','height','puu_korgus','h','height_m','tree_height'],['korgus','height'])
-            dk=field(names,['vora_diameeter','diameter','crown_diameter','diameeter','vora_laius','d'],['diameet','diameter','voralai','crownwidth'])
-            tk=field(names,['tyyp','liik','puuliik','class','type','puu_tyyp'],['puuliik','puutyyp','treeclass'])
+            hk=field(names,['korgus','height','puu_korgus','h','height_m','tree_height'],['puukorgus','height','korgus'])
+            dk=field(names,['vora_diameeter','diameter','crown_diameter','diameeter','vora_laius','d'],['diameet','diameter','voralai','voralabi','labimoot','crownwidth','crowndiameter'])
+            tk=field(names,['tyyp','liik','puuliik','class','type','puu_tyyp'],['puuliik','puutyyp','treeclass','okasleht','liigiryhm'])
             report.setdefault('vegetationFieldMapping',[]).append(dict(height=hk,diameter=dk,type=tk))
             if not hk:continue
             for i,g in enumerate(geoms):

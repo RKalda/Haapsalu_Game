@@ -113,7 +113,11 @@ async function run(){
   }
 
   status('Loading real LOD2 building meshes…');
-  const buildingMats=facadeTex.map(map=>new THREE.MeshStandardMaterial({map,vertexColors:true,roughness:.9,side:THREE.DoubleSide}));
+  async function normalTexture(name){
+    const t=await imageLoader.loadAsync(root+name+'_normal.png');t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=4;return t;
+  }
+  const normalMaps=await Promise.all(['facade_plaster','facade_wood','facade_brick','roof','wall_plain','asphalt','paving'].map(normalTexture));
+  const buildingMats=facadeTex.map((map,i)=>new THREE.MeshStandardMaterial({map,normalMap:normalMaps[i],normalScale:new THREE.Vector2(.48,.48),vertexColors:true,roughness:.83,side:THREE.DoubleSide}));
   const buildingChunks=await Promise.all(m.buildings.map(async b=>{
     const a=new Float32Array(await (await data(b.file)).arrayBuffer());
     if(a.length!==b.vertices*9)throw Error('Invalid building data: '+b.file);
@@ -179,7 +183,7 @@ async function run(){
   function roadMesh(vertices,map,color,offset){
     const p=new Float32Array(vertices),uv=new Float32Array(p.length/3*2);
     for(let i=0;i<p.length/3;i++){uv[i*2]=p[i*3]/3;uv[i*2+1]=p[i*3+2]/3}
-    const mesh=new THREE.Mesh(geom(p,null,uv),new THREE.MeshStandardMaterial({map,color,roughness:1,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:offset,polygonOffsetUnits:offset}));
+    const mesh=new THREE.Mesh(geom(p,null,uv),new THREE.MeshStandardMaterial({map,color,normalMap:map===asphaltTex?normalMaps[5]:map===pavingTex?normalMaps[6]:null,normalScale:new THREE.Vector2(.65,.65),roughness:1,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:offset,polygonOffsetUnits:offset}));
     mesh.receiveShadow=true;scene.add(mesh);return mesh;
   }
   roadMesh(roadPositions,asphaltTex,0xffffff,-2);
@@ -200,6 +204,33 @@ async function run(){
     treeCells.get(key).trees.push([x,y,z,h,d,pine]);
   }
   const plane=new THREE.PlaneGeometry(1,1),dummy=new THREE.Object3D(),color=new THREE.Color();
+  // Use an actual game-ready pine prototype only when the pack contains an
+  // identifiable single LOD group with a bounded geometry budget.
+  let pineProto=null;
+  if(m.pineAsset){
+    try{
+      const model=(await new GLTFLoader().loadAsync(root+'pine.glb')).scene;
+      model.updateMatrixWorld(true);
+      const candidates=[];
+      model.traverse(o=>{
+        if(!/lod[ _.-]*[01]($|[^0-9])/i.test(o.name||''))return;
+        const meshes=[];let tris=0;
+        o.traverse(p=>{if(p.isMesh&&p.geometry&&!Array.isArray(p.material)&&!p.isSkinnedMesh){meshes.push(p);tris+=(p.geometry.index?.count||p.geometry.attributes.position.count)/3}});
+        if(!meshes.length||meshes.length>7||tris>11000||tris<30)return;
+        const box=new THREE.Box3().setFromObject(o),s=box.getSize(new THREE.Vector3());
+        if(s.y<=0||s.x<=0||s.z<=0||s.y<Math.max(s.x,s.z)*.8)return;
+        candidates.push({meshes,tris,box,s});
+      });
+      candidates.sort((a,b)=>a.tris-b.tris);
+      const p=candidates[0];
+      if(p){
+        const center=p.box.getCenter(new THREE.Vector3());
+        const norm=new THREE.Matrix4().makeScale(1/Math.max(p.s.x,p.s.z),1/p.s.y,1/Math.max(p.s.x,p.s.z)).multiply(new THREE.Matrix4().makeTranslation(-center.x,-p.box.min.y,-center.z));
+        pineProto=p.meshes.map(o=>({geo:o.geometry,mat:o.material,transform:norm.clone().multiply(o.matrixWorld)}));
+        console.log('Using supplied pine model:',p.tris,'triangles');
+      }else console.warn('Pine GLB has no identifiable low-cost single LOD; using foliage cards');
+    }catch(e){console.warn('Pine GLB unavailable, using foliage cards',e)}
+  }
   const cellMeshes=[];
   for(const cell of treeCells.values()){
     const groups=Array.from({length:6},()=>[]);
@@ -208,9 +239,24 @@ async function run(){
     groups.forEach((list,i)=>{
       if(!list.length)return;
       for(const [group,cardCount] of [[near,3],[far,2]]){
-        const mesh=new THREE.InstancedMesh(plane,leafMaterials[i],list.length*cardCount);
+        // Closest conifers use actual model geometry; remaining trees use cards.
+        const modelTrees=group===near&&i>=3&&pineProto?list.slice(0,Math.min(18,list.length)):[];
+        if(modelTrees.length){
+          const matrix=new THREE.Matrix4();
+          for(const part of pineProto){
+            const inst=new THREE.InstancedMesh(part.geo,part.mat,modelTrees.length);
+            modelTrees.forEach(([x,y,z,h,d],j)=>{
+              dummy.position.set(x,y,z);dummy.rotation.set(0,(x*.137+z*.753)%Math.PI,0);dummy.scale.set(d,h,d);dummy.updateMatrix();
+              matrix.multiplyMatrices(dummy.matrix,part.transform);inst.setMatrixAt(j,matrix);
+            });
+            inst.instanceMatrix.needsUpdate=true;inst.castShadow=true;inst.receiveShadow=true;inst.computeBoundingSphere();group.add(inst);
+          }
+        }
+        const cardTrees=list.slice(modelTrees.length);
+        if(!cardTrees.length)continue;
+        const mesh=new THREE.InstancedMesh(plane,leafMaterials[i],cardTrees.length*cardCount);
         let j=0;
-        for(const [x,y,z,h,d] of list){
+        for(const [x,y,z,h,d] of cardTrees){
           const turn=(x*1.163+z*.753)%Math.PI;
           for(let k=0;k<cardCount;k++){
             dummy.position.set(x,y+h*.5,z);dummy.scale.set(Math.max(d,.8)*1.08,h,1);
@@ -237,8 +283,8 @@ async function run(){
     waterMat=new THREE.MeshStandardMaterial({color:0x397a89,metalness:.28,roughness:.23,side:THREE.DoubleSide,transparent:true,opacity:.92});
     waterMat.onBeforeCompile=s=>{
       s.uniforms.waterTime={value:0};waterMat.userData.time=s.uniforms.waterTime;
-      s.vertexShader='varying vec3 waterPos;\\n'+s.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\\nwaterPos=position;');
-      s.fragmentShader='uniform float waterTime; varying vec3 waterPos;\\n'+s.fragmentShader.replace('#include <normal_fragment_maps>',`
+      s.vertexShader='varying vec3 waterPos;\n'+s.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\nwaterPos=position;');
+      s.fragmentShader='uniform float waterTime; varying vec3 waterPos;\n'+s.fragmentShader.replace('#include <normal_fragment_maps>',`
         #include <normal_fragment_maps>
         normal=normalize(normal+vec3(sin(waterPos.x*1.2+waterPos.z*.45+waterTime*.7)*.045,sin(waterPos.z*1.3-waterTime*.5)*.025,cos(waterPos.z*.8+waterTime*.6)*.045));
       `);

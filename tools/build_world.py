@@ -261,10 +261,14 @@ def main(report):
     car=ROOT/"assets/cars/bmw_3-series_e36_street.glb"
     if not car.exists() or is_pointer(car):raise RuntimeError("Download the BMW GLB with git lfs pull.")
     shutil.copyfile(car,OUT/"car.glb")
+    pine=ROOT/"assets/nature/pine_trees_pack_lowpoly_game_ready_lods.glb"
+    pine_asset=pine.exists() and not is_pointer(pine)
+    if pine_asset:shutil.copyfile(pine,OUT/"pine.glb")
+    report["pineAssetAvailable"]=pine_asset
     report["waterTriangles"]=len(water)//3
     manifest={"version":3,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
       "terrainCoverage":round(float(valid.mean()),4),"orthoCoverage":round(float(mask.mean()),4),
-      "buildings":buildings,"buildingCount":count,"roads":roads,"trees":trees,"aerialTiles":tiles,"water":water,"crossings":crossings,
+      "buildings":buildings,"buildingCount":count,"roads":roads,"trees":trees,"aerialTiles":tiles,"pineAsset":pine_asset,"water":water,"crossings":crossings,
       "spawn":[sx,height(sx,sz)+1.0,sz,yaw]}
     (OUT/"manifest.json").write_text(json.dumps(manifest,separators=(",",":")),encoding="utf-8")
     print(f"Built {count} buildings, {len(roads)} road segments, {len(trees)} trees, {nx}x{nz} height grid.")
@@ -309,6 +313,26 @@ def make_materials():
     texture("asphalt_03",80).save(OUT/"asphalt.jpg",quality=92)
     texture("PavingStones144",155).save(OUT/"paving.jpg",quality=90)
     texture("Grass001",110).save(OUT/"grass.jpg",quality=90)
+    # Prefer supplied OpenGL normal maps. Otherwise derive a restrained detail normal.
+    for name,prefix in (("asphalt","asphalt_03"),("paving","PavingStones144"),("roof","RoofingTiles001"),("wall_plain","Plaster001"),("facade_plaster",None),("facade_wood",None),("facade_brick",None)):
+        normal=None
+        if prefix:
+            for path in sorted((ROOT/"assets/textures").glob(prefix+"*.zip")):
+                if is_pointer(path):continue
+                try:
+                    with zipfile.ZipFile(path) as z:
+                        candidates=[n for n in z.namelist() if n.lower().endswith((".png",".jpg",".jpeg")) and any(s in n.lower() for s in ("normalgl","normal_gl","nor_gl","normal_opengl"))]
+                        if candidates:
+                            with z.open(candidates[0]) as f:normal=Image.open(f).convert("RGB").resize((512,512),Image.Resampling.LANCZOS)
+                            break
+                except Exception as exc:print("Normal map fallback",name,exc)
+        if normal is None:
+            with Image.open(OUT/(name+".jpg")) as image:
+                gray=np.asarray(image.convert("L"),dtype=np.float32)/255
+            gy,gx=np.gradient(gray);v=np.stack((-gx*1.3,gy*1.3,np.ones_like(gray)),axis=-1)
+            v/=np.linalg.norm(v,axis=-1,keepdims=True)
+            normal=Image.fromarray(np.uint8(np.clip(v*.5+.5,0,1)*255),"RGB")
+        normal.save(OUT/(name+"_normal.png"))
 
 if __name__=="__main__":
     report={}

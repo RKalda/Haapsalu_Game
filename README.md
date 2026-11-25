@@ -45,3 +45,5 @@ Rebuild world data before running: `python tools/build_world.py` (default aerial
 - The 1917px Fotoladu photos have geographic footprints but not calibrated camera poses. They are retained as reference; do not project them directly as if camera calibration were known.
 
 Run `python tools/build_world.py`, then `npm run dev`. Optional `--tile-pixels 2048` increases near-ground detail and GPU memory. Runtime and actual data schema have not been verified in the GitHub connector environment.
+
+Additional v0.3 refinements: normal maps extracted from supplied packs when possible, with conservative generated fallback; the supplied pine GLB is copied and used for a capped number of near conifers only if an identifiable single low-cost LOD passes validation. Otherwise alpha-tested foliage remains the fallback. See console for selection. The exact tree mesh hierarchy and GPKG schemas remain unverified until local runtime/build.
