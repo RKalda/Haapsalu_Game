@@ -17,6 +17,7 @@ import mapbox_earcut
 from world_sources import BuildingInfo, measured_trees, aerial_tiles, foliage_sprites
 from photo_facades import PhotoFacades, frame as wall_frame
 from topography import compile_details
+from aerial_facades import AerialFacades
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "public/world"
@@ -74,7 +75,7 @@ def triangulate(face):
     ind=mapbox_earcut.triangulate_float64(np.ascontiguousarray(coords[:,keep]),np.cumsum([len(r) for r in rings],dtype=np.uint32))
     return coords[ind],abs(normal[2])/length
 def main(report):
-    p=argparse.ArgumentParser();p.add_argument("--step",type=float,default=4);p.add_argument("--texture-size",type=int,default=4096);p.add_argument("--tile-pixels",type=int,default=1280);p.add_argument("--no-hd-tiles",action="store_true");p.add_argument("--reuse-hd-tiles",action="store_true")
+    p=argparse.ArgumentParser();p.add_argument("--step",type=float,default=4);p.add_argument("--texture-size",type=int,default=4096);p.add_argument("--tile-pixels",type=int,default=1280);p.add_argument("--no-hd-tiles",action="store_true");p.add_argument("--reuse-hd-tiles",action="store_true");p.add_argument("--skip-aerial-facades",action="store_true")
     args=p.parse_args()
     if args.step<2 or args.texture_size<256: raise ValueError("Invalid resolution")
     OUT.mkdir(parents=True,exist_ok=True)
@@ -128,6 +129,9 @@ def main(report):
             tiles=previous["aerialTiles"];print("Reusing",len(tiles),"existing aerial tiles")
         else:tiles=[] if args.no_hd_tiles else aerial_tiles(ortho,OUT,(w,s,e,n),nx,nz,pixels=max(256,min(2048,args.tile_pixels)))
         report["aerialTiles"]=len(tiles)
+        def photo_project(lon,lat):
+            east,north=PROJ.transform(lon,lat);return np.asarray(east)-cx,cy-np.asarray(north)
+        aerial=None if args.skip_aerial_facades else AerialFacades(ROOT,photos,rgb,bounds,height,metadata,CENTER,photo_project,report)
         # Read real 3D faces directly from official file geodatabase.
         gdbs=list(ROOT.glob("*gdb.zip"))
         if not gdbs: raise RuntimeError("Building GDB ZIP is missing")
@@ -211,6 +215,10 @@ def main(report):
                         else:uv=np.column_stack((u/2.7,yy/2.8))
                     if fi in selected:
                         kind,uv=photos.uv(f,selected[fi]);col=np.ones_like(col)
+                    elif aerial is not None and not isroof and f is not None:
+                        result=aerial.apply(xyz,f)
+                        if result is not None:
+                            kind,uv=result;col=np.ones_like(col)
                     chunks[key].append(np.column_stack((xyz,col,uv,np.full(len(pts),kind))).astype("<f4"))
                 footprints.append(box(bw-cx,cy-bn,be-cx,cy-bs));count+=1
         if not count: raise RuntimeError("No usable 3D buildings in this area; inspect GDB layers and CRS.")
@@ -218,6 +226,7 @@ def main(report):
         for (a,b),data in sorted(chunks.items()):
             name=f"b_{a}_{b}.dat";v=np.concatenate(data);v.tofile(OUT/name)
             buildings.append({"file":name,"center":[a*500+250,b*500+250],"vertices":len(v)})
+    if aerial is not None:aerial.finish()
     photo_atlases=photos.save(report)
     report["buildingStats"]=dict(metadata.stats)
     raw=ROOT/"export.geojson"

@@ -5,3 +5,5 @@ pyogrio>=0.10,<1
 shapely>=2.0,<3
 mapbox-earcut>=1.0,<3
 Pillow>=10,<13
+
+opencv-python-headless>=4.10,<5

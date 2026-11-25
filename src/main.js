@@ -570,6 +570,7 @@ async function run(){
       if(x<0||x>w||y<0||y>h||labels.some(a=>Math.abs(a[0]-x)<(a[2]+width)/2&&Math.abs(a[1]-y)<17))continue;
       labels.push([x,y,width]);mx.lineWidth=3;mx.strokeStyle='#132326';mx.strokeText(name,x,y);mx.fillStyle='#fff';mx.fillText(name,x,y);
     }
+    for(const poi of m.details?.pois||[]){const x=px(poi.x),y=pz(poi.z);if(x<0||x>w||y<0||y>h)continue;mx.font='11px Arial';mx.fillStyle='#bce3b0';mx.strokeStyle='#15251e';mx.lineWidth=3;mx.strokeText(poi.name,x,y);mx.fillText(poi.name,x,y)}
     function pin(x,z,color,r){mx.fillStyle=color;mx.strokeStyle='#101b20';mx.lineWidth=2;mx.beginPath();mx.arc(px(x),pz(z),r,0,Math.PI*2);mx.fill();mx.stroke()}
     pin(car.position.x,car.position.z,'#69d5ff',6);if(selected)pin(selected.x,selected.z,'#ffbd68',8);
     mx.textAlign='left';mx.fillStyle='#fff';mx.fillText(Math.round(100/zoom)+' m',16,h-16);

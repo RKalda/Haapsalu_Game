@@ -54,7 +54,7 @@ def compile_details(root,osm,project,bounds,ground,footprints,report):
         for line in pieces(g,'LineString'):
             if line.length<.5:continue
             # Avoid walls already represented as LOD2 building polygons.
-            if building_tree is not None and source=='etak' and len(building_tree.query(line.interpolate(.5,normalized=True),predicate='within')):continue
+            if building_tree is not None and source=='etak' and not castle and len(building_tree.query(line.interpolate(.5,normalized=True),predicate='within')):continue
             h=tagnum(p.get('height',p.get('korgus_m')),4.5 if castle else 1.25 if kind=='stone' else 1.6,.3,16)
             width=tagnum(p.get('width'),1.5 if castle else .48 if kind=='stone' else .16,.12,5)
             if source=='etak' and wall_geoms:
@@ -138,6 +138,8 @@ def compile_details(root,osm,project,bounds,ground,footprints,report):
                 add_area(g,'sea' if layer=='E_201_meri_a' else 'water',name)
         stats[layer]=count
     graves=list({(round(x,2),round(z,2)) for x,z in graves})
+    if not walls:print('WARNING: no mapped walls imported. Check topography download report.')
+    if not any(w['castle'] for w in walls):print('WARNING: no mapped castle wall lines recognized. Check ETAK/OSM geometry.')
     result=dict(walls=walls,paths=paths,areas=areas,graves=graves,pois=pois)
     report['topography']={'sources':stats,'walls':len(walls),'castleWallLines':sum(w['castle'] for w in walls),'cemeteryAreas':sum(a['kind']=='cemetery' for a in areas),'mappedGraves':len(graves),'paths':len(paths),'areas':len(areas)}
     print('Topography:',report['topography'],flush=True)
