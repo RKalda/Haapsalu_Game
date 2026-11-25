@@ -30,7 +30,13 @@ class PhotoFacades:
                 im=ImageOps.exif_transpose(im).convert('RGB')
                 if 'quad' in item:
                     a,b,c,d=[tuple(map(float,v)) for v in item['quad']]
-                    im=im.transform((500,500),Image.Transform.QUAD,(*a,*d,*c,*b),Image.Resampling.BICUBIC)
+                    # Projective rectification: solve output-to-source homography.
+                    A=[];B=[]
+                    for (u,v),(xx,yy) in zip(((0,0),(499,0),(499,499),(0,499)),(a,b,c,d)):
+                        A.extend([[u,v,1,0,0,0,-u*xx,-v*xx],[0,0,0,u,v,1,-u*yy,-v*yy]])
+                        B.extend([xx,yy])
+                    coeff=np.linalg.solve(np.asarray(A,dtype=float),np.asarray(B,dtype=float))
+                    im=im.transform((500,500),Image.Transform.PERSPECTIVE,tuple(coeff),Image.Resampling.BICUBIC)
                 elif not item.get('rectified'):raise ValueError('Provide rectified:true or quad')
                 im=im.resize((500,500),Image.Resampling.LANCZOS)
             page=i//16;cell=i%16
