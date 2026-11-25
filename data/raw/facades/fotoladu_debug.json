@@ -1,0 +1,89 @@
+{
+  "page": "https://fotoladu.maaruum.ee/api.php?B=58.947&L=23.537&azimuthmin=157.5&azimuthmax=202.5&div=NW",
+  "iframes": [],
+  "scripts": [
+    {
+      "src": "https://fotoladu.maaruum.ee/cdn-cgi/challenge-platform/scripts/precursor/main.js?ray=a602e6f93c9f4dd3",
+      "code": null
+    },
+    {
+      "src": "chrome-extension://ncibgoaomkmdpilpocfeponihegamlic/token-signing-page-script.js",
+      "code": null
+    },
+    {
+      "src": "https://stat.envir.ee/matomo.js",
+      "code": null
+    },
+    {
+      "src": "https://fotoladu.maaruum.ee/src/jquery.min.js",
+      "code": null
+    },
+    {
+      "src": "https://fotoladu.maaruum.ee/etak/leaflet.js",
+      "code": null
+    },
+    {
+      "src": "https://fotoladu.maaruum.ee/etak/leaflet-deepzoom.js",
+      "code": null
+    },
+    {
+      "src": "https://fotoladu.maaruum.ee/etak/jquery.lazy.min.js",
+      "code": null
+    },
+    {
+      "src": "",
+      "code": "\n\t\n\t\n\t\n\t$(document).ready(function(){\t\t\n\t\t$('.dogisBaseLayerGalleryItem').Lazy();\n\t});\n\t\n      function getUrlParameter(sParam) {\n        var sPageURL = decodeURIComponent(window.location.search.substring(1)),\n            sURLVariables = sPageURL.split('&'),\n            sParameterName,\n            i;\n        for (i = 0; i < sURLVariables.length; i++) {\n          sParameterName = sURLVariables[i].split('=');\n          if (sParameterName[0] === sParam) {\n            return sParameterName[1] === undefined ? true : sParameterName[1];\n          }\n        }\n      };\n      var CurrentImageID=0;\n      var map = L.map('image2d',{zoomControl: false, attributionControl: false}).setView(new L.LatLng(0,0), 0);\n      var bounds = [[0,0], [1000,1000]];\n      dzLayer = L.imageOverlay('', bounds).addTo(map);\n      map.on('moveend', function () {\n        document.getElementById(CurrentImageID).setAttribute('data-ImageLocAtts',map.getCenter().lat + ',' + map.getCenter().lng + ',' + map.getZoom());\n        linkatts=document.getElementById(CurrentImageID).getAttribute('data-ImageAtts').split(',');\n        linklocatts=document.getElementById(CurrentImageID).getAttribute('data-ImageLocAtts').split(',');\n        if (dzLayer._url.indexOf(\"/tiles/\") > -1) {\n          document.getElementById('fotoladulink').href='https://fotoladu.maaruum.ee/?basemap=hybriidk&foto='+ linkatts[0] +'&zlevel=12,' + linkatts[3] + ',' + linkatts[4] + '&overlay=avaleht&HDzlevel=' +  linklocatts[2] + ',' + linklocatts[0] + ',' + linklocatts[1] + '&HD=' + linkatts[2] + ',' + linkatts[1] + '.jpg';\n        }\n        else {\n          document.getElementById('fotoladulink').href='https://fotoladu.maaruum.ee/foto=' + linkatts[0];\n        }\n      }\n            );\n      //8 - id,image,istiled,rada,fw,fh,ax,ay,y1,x1,y2,x2,y3,x3,y4,x4,korgus,imagedata,tapsus\n      //5.7 id,image,istiled,rada,fw,fh,ax,ay,x1,y1,x2,y2,x3,y3,x4,y4,korgus,imagedata,tapsus\n      function pilt(id,image,istiled,rada,fw,fh,ax,ay,x1,y1,x2,y2,x3,y3,x4,y4,korgus,imagedata,tapsus,aeg,tyyp) {\t\t \n        CurrentImageID=id;\n        document.getElementById(\"next3_zoombtn\").onclick = function() {\n\t\twindow.open('https://fotoladu.maaruum.ee/?foto='+id);\t\t \n        }\n\t\t$('#fototapsus').hide();\n\t\t\n\t\t\n\t\tif(tapsus==0){\t\t\t\n\t\t$(\"#fototapsus\").text(\"Foto asukoht on ligikaudne!\");\n\t\t$('#fototapsus').show();\t\t\n\t\t}\n\t\tif(tapsus==3){\t\t\t\n\t\t$(\"#fototapsus\").text(\"Foto asukoht on kasutaja määratud, kuid veel ülekontrollimata!\");\n\t\t$('#fototapsus').show();\t\t\n\t\t}\n\t\tif(tapsus==2 && image.substring(0, 4)*1<2017){\t\t\t\n\t\t$(\"#fototapsus\").text(\"Foto asukoht on ligikaudne!\");\n\t\t$('#fototapsus').show();\t\t\n\t\t}\n\t\t\n\t\t\n        if (typeof imagedatavalues !== 'undefined') {\n          delete imagedatavalues;\n        }\n\t\t\n        if (imagedata!='0,0,0') {\n          imagedatavalues=imagedata.split(',');\n        }\n        if (istiled==0) {\n          allimages = document.getElementById('pildilist').querySelectorAll('img');\n          for(i=0;i<allimages.length;i++){\n            allimages[i].parentNode.classList.remove(\"active\");\n          }\n          document.getElementById(id).parentNode.classList.add(\"active\");\n          map.removeLayer(dzLayer);\n          f1000=1000/Math.max(fw,fh);\n          fw=fw*f1000;\n          fh=fh*f1000;\n          if (fw>fh) {\n            var bounds = [[0,0], [fw*1,fh/2.475]];\n          }\n          else {\n            var bounds = [[0,0], [fw/10,fh/16]];\n          }\n          dzLayer = L.imageOverlay('data/' + rada + '/hd/' + image + '.jpg', bounds).addTo(map);\n          map.fitBounds(bounds);\n\t\t\n          return;\n        }\n        if (x1==0) {\n          allimages = document.getElementById('pildilist').querySelectorAll('img');\n          for(i=0;i<allimages.length;i++){\n            allimages[i].parentNode.classList.remove(\"active\");\n          }\n          document.getElementById(id).parentNode.classList.add(\"active\");\n          map.removeLayer(dzLayer);\n          dzLayer = L.tileLayer.deepzoom('read_tiles.php?' + image + '/', {\n            width: fw, \n            height: fh,\n            minZoom: 10,            \n            maxZoom: (korgus<500?12:18),\n            maxNativeZoom: 12\n          }\n                                        ).addTo(map);\n          if (typeof imagedatavalues !== 'undefined') {\n            map.setView([imagedatavalues[0],imagedatavalues[1]],imagedatavalues[2]);\n\n          }\n          else {\n            map.fitBounds(dzLayer.options.bounds);\n\t\t\t\n          }\n          return;\n        }\n        nax=ax*1000;\n        nay=ay*1000;\n        x1=x1*1000;\n        y1=y1*1000;\n        x2=x2*1000;\n        y2=y2*1000;\n        x3=x3*1000;\n        y3=y3*1000;\n        x4=x4*1000;\n        y4=y4*1000;\n        allimages = document.getElementById('pildilist').querySelectorAll('img');\n        for(i=0;i<allimages.length;i++){\n          allimages[i].parentNode.classList.remove(\"active\");\n        }\n        document.getElementById(id).parentNode.classList.add(\"active\");\n        a = [[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]];\n        b = [[0],[0],[0],[0],[0],[0],[0],[0]];\n        inv = [[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]];\n        n = [[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]];\n        m = [[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]];\n        p = [[0,0,0],[0,0,0],[0,0,0]];\n        minx=Math.min(x1,x2,x3,x4);\n        maxx=Math.max(x1,x2,x3,x4);\n        miny=Math.min(y1,y2,y3,y4);\n        maxy=Math.max(y1,y2,y3,y4);\n        x1=maxx-x1;\n        x2=maxx-x2;\n        x3=maxx-x3;\n        x4=maxx-x4;\n        y1=maxy-y1;\n        y2=maxy-y2;\n        y3=maxy-y3;\n        y4=maxy-y4;\n        nax=maxx-nax;\n        nay=maxy-nay;\n        fx=[x1,x2,x3,x4];\n        fy=[y1,y2,y3,y4];\n        tx=[0,0,1000,1000];\n        ty=[0,1000,1000,0];\n        a[0][0] = fx[0];\n        a[0][1] = fy[0];\n        a[0][2] = 1;\n        a[0][3] = 0;\n        a[0][4] = 0;\n        a[0][5] = 0;\n        a[0][6] = -1 * tx[0] * fx[0];\n        a[0][7] = -1 * tx[0] * fy[0];\n        a[1][0] = fx[1];\n        a[1][1] = fy[1];\n        a[1][2] = 1;\n        a[1][3] = 0;\n        a[1][4] = 0;\n        a[1][5] = 0;\n        a[1][6] = -1 * tx[1] * fx[1];\n        a[1][7] = -1 * tx[1] * fy[1];\n        a[2][0] = fx[2];\n        a[2][1] = fy[2];\n        a[2][2] = 1;\n        a[2][3] = 0;\n        a[2][4] = 0;\n        a[2][5] = 0;\n        a[2][6] = -1 * tx[2] * fx[2];\n        a[2][7] = -1 * tx[2] * fy[2];\n        a[3][0] = fx[3];\n        a[3][1] = fy[3];\n        a[3][2] = 1;\n        a[3][3] = 0;\n        a[3][4] = 0;\n        a[3][5] = 0;\n        a[3][6] = -1 * tx[3] * fx[3];\n        a[3][7] = -1 * tx[3] * fy[3];\n        a[4][0] = 0;\n        a[4][1] = 0;\n        a[4][2] = 0;\n        a[4][3] = fx[0];\n        a[4][4] = fy[0];\n        a[4][5] = 1;\n        a[4][6] = -1 * fx[0] * ty[0];\n        a[4][7] = -1 * fy[0] * ty[0];\n        a[5][0] = 0;\n        a[5][1] = 0;\n        a[5][2] = 0;\n        a[5][3] = fx[1];\n        a[5][4] = fy[1];\n        a[5][5] = 1;\n        a[5][6] = -1 * fx[1] * ty[1];\n        a[5][7] = -1 * fy[1] * ty[1];\n        a[6][0] = 0;\n        a[6][1] = 0;\n        a[6][2] = 0;\n        a[6][3] = fx[2];\n        a[6][4] = fy[2];\n        a[6][5] = 1;\n        a[6][6] = -1 * fx[2] * ty[2];\n        a[6][7] = -1 * fy[2] * ty[2];\n        a[7][0] = 0;\n        a[7][1] = 0;\n        a[7][2] = 0;\n        a[7][3] = fx[3];\n        a[7][4] = fy[3];\n        a[7][5] = 1;\n        a[7][6] = -1 * fx[3] * ty[3];\n        a[7][7] = -1 * fy[3] * ty[3];\n        b[0][0] = tx[0];\n        b[1][0] = tx[1];\n        b[2][0] = tx[2];\n        b[3][0] = tx[3];\n        b[4][0] = ty[0];\n        b[5][0] = ty[1];\n        b[6][0] = ty[2];\n        b[7][0] = ty[3];\n        // copy it\n        for( j = 0 ; j < 8 ; j++ )\n          for( i = 0 ; i < 8 ; i++ )\n            n[j][i] = a[j][i];\n        // insert identity matrix \n        for( i = 0 ; i < 8 ; i++ )\n          n[i][i+8] = 1.0;\n        // start gauss elimination\n        for( i = 0 ; i < 8 ; i++ ){\n          // find max\n          max_key = i;\n          for( j = i+1 ; j < 8 ; j++ )\n            if( n[j][i] > n[max_key][i] )\n              max_key = j;\n          // swap with current row\n          if( max_key != i ){\n            for( j = 0 ; j < 8*2 ; j++ ){\n              tmp = n[i][j];\n              n[i][j] = n[max_key][j];\n              n[max_key][j] = tmp;\n            }\n          }\n          // normalize\n          v = n[i][i];\n          for( j = i+1 ; j < 8*2 ; j++ )\n            n[i][j] /= v;\n          for( j = i+1 ; j < 8 ; j++ ){\n            v = n[j][i];\n            n[j][i] = 0.0;\n            for( k = i+1 ; k < 8*2 ; k++ ){\n              n[j][k] -= n[i][k]*v;\n            }\n          }\n        }\n        for( i = 8-2 ; i >= 0 ; i-- ){\n          for( j = i ; j >= 0 ; j-- ){\n            v = n[j][i+1];\n            for( k = 0 ; k < 8*2 ; k++ ){\n              n[j][k] -= n[i+1][k]*v;\n            }\n          }\n        }\n        // copy it\n        for( j = 0 ; j < 8 ; j++ )\n          for( i = 0 ; i < 8 ; i++ )\n            inv[j][i] = n[j][i+8];\n        for(j=0;j<8;j++){\n          for(i=0;i<8;i++){\n            for(k=0;k<8;k++){\n              m[j][i] += inv[j][k]*b[k][i];\n            }\n          }\n        }\n        p[0][0] = m[0][0];\n        p[0][1] = m[1][0];\n        p[0][2] = m[2][0];\n        p[1][0] = m[3][0];\n        p[1][1] = m[4][0];\n        p[1][2] = m[5][0];\n        p[2][0] = m[6][0];\n        p[2][1] = m[7][0];\n        p[2][2] = 1.0;\n        w = p[2][0]*nax + p[2][1]*nay + p[2][2];\n        x = 1000-(p[0][0]*nax + p[0][1]*nay + p[0][2]) / w;\n        y = (p[1][0]*nax + p[1][1]*nay + p[1][2]) / w;\n        x=x-500;\n        y=y-500;\n       \n\t\t map.eachLayer(function(layer) {\n\t\t\tmap.removeLayer(layer);\n\t\t});\t \n\t\t\t\t\n        dzLayer = new L.tileLayer.deepzoom('read_tiles.php?' + image + '/', {\n          width: fw, \n          height: fh,\n          minZoom: 9,\n          maxZoom: 18          \n        });\t        \n       \n        if(tyyp==8){\n        dzLayer.options.maxNativeZoom=13;\n      } else if (tyyp!==8 && korgus<500) {\n        dzLayer.options.maxNativeZoom=12;\n      } else {\n        dzLayer.options.maxNativeZoom=13;\n      }\n        xc=(dzLayer.options.bounds.getNorthEast().lng+(dzLayer.options.bounds.getSouthWest().lng-dzLayer.options.bounds.getNorthEast().lng)/2);\n        yc=(dzLayer.options.bounds.getNorthEast().lat+(dzLayer.options.bounds.getSouthWest().lat-dzLayer.options.bounds.getNorthEast().lat)/2);\n        xs=(dzLayer.options.bounds.getSouthWest().lng-dzLayer.options.bounds.getNorthEast().lng)/1000;\n        ys=(dzLayer.options.bounds.getSouthWest().lat-dzLayer.options.bounds.getNorthEast().lat)/1000;\n        x=xc-xs*x;\n        y=yc-ys*y;\t\n        if(tile=8){\n          z=13;\n        } else {\n        z=Math.min(Math.round(document.getElementById(\"image2d\").clientWidth/1920*2)+11,(korgus<500?12:13));\n      }\n      \n       \n       \n\t\tmap.setView([y,x],z);\n\t\t\n\t\n\t\tdzLayer.addTo(map);\n\t\t\n   \n       \n      }\n\t  \n      function init() {\n        allimages = document.getElementById('pildilist').querySelectorAll('img');\n        allimages[0].click();\n        if (typeof getUrlParameter('fotoladu') == 'undefined') {\n          document.getElementById(\"fotoladulinkdiv\").style.display = \"block\";\n          document.getElementById(\"next3_zoombtn\").style.display = \"none\";\n        }\n        else {\n          document.getElementById(\"fotoladulinkdiv\").style.display = \"none\";\n          document.getElementById(\"next3_zoombtn\").style.display = \"block\";\n        }\n      }\n\n    "
+    },
+    {
+      "src": "",
+      "code": "\n\n\t\t pilt('8222079','2024-05-01-15-43-29_K1','1','img/a7r3/2024-05/01','7952',5304,23.537,58.947,23.5355439595665,58.9553413014356,23.5295453870463,58.9424953208196,23.559936790496,58.9405661772475,23.5582813660103,58.9540595310746,2504,'0,0,0',2,2024-05-01,5);    "
+    },
+    {
+      "src": "",
+      "code": "\n  var _paq = window._paq = window._paq || [];\n  /* tracker methods like \"setCustomDimension\" should be called before \"trackPageView\" */\n  _paq.push(['trackPageView']);\n  _paq.push(['enableLinkTracking']);\n  (function() {\n    var u=\"https://stat.envir.ee/\";\n    _paq.push(['setTrackerUrl', u+'matomo.php']);\n    _paq.push(['setSiteId', '69']);\n    var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];\n    g.async=true; g.src=u+'matomo.js'; s.parentNode.insertBefore(g,s);\n  })();\n"
+    },
+    {
+      "src": "https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092",
+      "code": null
+    },
+    {
+      "src": "",
+      "code": "window.__CF$cv$params={r:'a602e6f93c9f4dd3',t:'MTc5NTYzMzI4OQ==',u:'01a213e5e6f27465b21c90bbca8cb411',ut:'onLSWRv8fWJlXNu8UIEFJfTlwXbG39PP4cjnTnAnPVE-1795633289-1.2.1.1-uFVIzZHFsVuJf4DYfDiCKAsQ4nghLu_Vr6kz87Vu0ZRN4BUj4WSJXbSkB_vKKCBQs.wAw_MpJqqJfy3xbPe5bR5axLpnyHQhoz61dlrbEXs',i:60};(function(){if(!document.body)return;var l=window.location,o;try{o=new URL(l.origin).origin}catch(e){try{o=new URL(new URL(l.href).origin).origin}catch(e){o=''}}var u='/cdn-cgi/challenge-platform/scripts/precursor/main.js?ray=a602e6f93c9f4dd3',s=document.createElement('script');s.src=o?new URL(u,o).href:u;document.head.appendChild(s);})();"
+    }
+  ],
+  "links": [
+    {
+      "text": "",
+      "href": "https://fotoladu.maaruum.ee/foto=8222079"
+    }
+  ],
+  "images": [
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2024-05/01/thumbs/2024-05-01-15-43-29_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2023-04/08/thumbs/2023-04-08-11-47-51_K2.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2022-06/17/thumbs/2022-06-17-07-53-31_K2.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2023-04/08/thumbs/2023-04-08-11-47-45_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2022-06/17/thumbs/2022-06-17-07-54-09_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2023-04/08/thumbs/2023-04-08-11-45-04_K2.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2022-06/15/thumbs/2022-06-15-10-06-10_K2.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2021-09/27/thumbs/2021-09-27-11-04-18_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2021-05/30/thumbs/2021-05-30-11-17-37_K2.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2021-05/30/thumbs/2021-05-30-11-06-54_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2021-09/27/thumbs/2021-09-27-11-04-07_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2021-05/30/thumbs/2021-05-30-11-17-43_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2020-05/30/thumbs/2020-05-30-17-00-50_K2.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2020-05/30/thumbs/2020-05-30-17-09-24_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2019-04/02/thumbs/2019-04-02-13-33-55_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2020-05/30/thumbs/2020-05-30-17-11-05_K2.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r2/2017-04/thumbs/2017-04-06-13-01-01.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r3/2019-04/02/thumbs/2019-04-02-14-01-30_K1.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r2/2017-04/thumbs/2017-04-06-13-18-34.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r2/2017-04/thumbs/2017-04-06-13-12-38.jpg",
+    "https://fotoladu.maaruum.ee/data/img/a7r2/2017-04/thumbs/2017-04-06-13-07-50.jpg",
+    "https://fotoladu.maaruum.ee/read_tiles.php?2024-05-01-15-43-29_K1/13/24_6.jpg",
+    "https://fotoladu.maaruum.ee/read_tiles.php?2024-05-01-15-43-29_K1/13/25_6.jpg",
+    "https://fotoladu.maaruum.ee/read_tiles.php?2024-05-01-15-43-29_K1/13/24_5.jpg",
+    "https://fotoladu.maaruum.ee/read_tiles.php?2024-05-01-15-43-29_K1/13/25_5.jpg",
+    "https://fotoladu.maaruum.ee/read_tiles.php?2024-05-01-15-43-29_K1/13/24_7.jpg",
+    "https://fotoladu.maaruum.ee/read_tiles.php?2024-05-01-15-43-29_K1/13/25_7.jpg"
+  ]
+}
