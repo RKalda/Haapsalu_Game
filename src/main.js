@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
+import {Sky} from 'three/addons/objects/Sky.js';
 
 const $=id=>document.getElementById(id);
 const root=import.meta.env.BASE_URL+'world/';
@@ -22,7 +23,7 @@ async function run(){
   status('Loading map manifest…');
   let m;
   try{m=await (await data('manifest.json')).json()}catch(e){throw Error('World not compiled. Run python tools/build_world.py from the project folder. '+e.message)}
-  if(m.version!==2)throw Error('Old world data. Re-run python tools/build_world.py.');
+  if(m.version!==3)throw Error('Old world data. Re-run python tools/build_world.py.');
   const [xmin,zmin,xmax,zmax]=m.bounds;
   const H=new Float32Array(await (await data('height.dat')).arrayBuffer());
   if(H.length!==m.nx*m.nz)throw Error('Height grid size does not match manifest');
@@ -45,7 +46,11 @@ async function run(){
   $('game').appendChild(renderer.domElement);
   const pmrem=new THREE.PMREMGenerator(renderer);
   const room=new RoomEnvironment();const env=pmrem.fromScene(room,.04);scene.environment=env.texture;scene.environmentIntensity=.5;room.dispose();pmrem.dispose();
-  scene.add(new THREE.HemisphereLight(0xdceeff,0x77735c,1.05));
+  scene.add(new THREE.HemisphereLight(0xdceeff,0x706750,.85));
+  const sky=new Sky();sky.scale.setScalar(3200);scene.add(sky);
+  const skyU=sky.material.uniforms;
+  skyU.turbidity.value=3.6;skyU.rayleigh.value=1.65;skyU.mieCoefficient.value=.006;skyU.mieDirectionalG.value=.82;
+  skyU.sunPosition.value.set(-65,100,-40);
   const sun=new THREE.DirectionalLight(0xffead4,2.0);sun.castShadow=true;
   sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-75,right:75,top:75,bottom:-75,near:1,far:300});
   sun.shadow.bias=-.00025;sun.shadow.normalBias=.045;scene.add(sun,sun.target);
@@ -70,6 +75,28 @@ async function run(){
     `);
   };
   const groundChunks=[];
+  const aerialIndex=new Map((m.aerialTiles||[]).map(t=>[t.row+':'+t.col,t.file]));
+  const imageLoader=new THREE.TextureLoader();let loadingTiles=0;
+  function streamAerial(x,z){
+    const nearest=groundChunks.filter(c=>c.tileFile).map(c=>[c,Math.hypot(c.x-x,c.z-z)]).sort((a,b)=>a[1]-b[1]);
+    const wanted=new Set(nearest.filter(([,d])=>d<950).slice(0,12).map(([c])=>c));
+    for(const [c] of nearest){
+      if(!wanted.has(c)&&c.detail){c.detail.dispose();c.detail=null;c.mesh.material.dispose();c.mesh.material=terrainMat}
+      c.wanted=wanted.has(c);
+    }
+    for(const [c] of nearest){
+      if(!c.wanted||c.detail||c.pending||c.failed||loadingTiles>=3)continue;
+      c.pending=true;loadingTiles++;
+      imageLoader.load(root+c.tileFile,t=>{
+        loadingTiles--;c.pending=false;
+        if(!c.wanted){t.dispose();return}
+        t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
+        t.repeat.set(1/c.us,1/c.vs);t.offset.set(-c.u0/c.us,-c.v0/c.vs);
+        const mat=terrainMat.clone();mat.map=t;mat.onBeforeCompile=terrainMat.onBeforeCompile;mat.needsUpdate=true;
+        c.detail=t;c.mesh.material=mat;
+      },undefined,e=>{loadingTiles--;c.pending=false;c.failed=true;console.warn('Aerial tile unavailable',c.tileFile,e)});
+    }
+  }
   for(let row=0;row<m.nz-1;row+=96)for(let col=0;col<m.nx-1;col+=96){
     let w=Math.min(96,m.nx-1-col)+1,d=Math.min(96,m.nz-1-row)+1;
     const p=new Float32Array(w*d*3),uv=new Float32Array(w*d*2),idx=new Uint32Array((w-1)*(d-1)*6);
@@ -81,7 +108,8 @@ async function run(){
       if(i<w-1&&j<d-1){idx.set([a,a+w,a+1,a+1,a+w,a+w+1],t);t+=6}
     }
     const mesh=new THREE.Mesh(geom(p,idx,uv),terrainMat);mesh.receiveShadow=true;scene.add(mesh);
-    groundChunks.push({p,idx,x:xmin+(col+w/2)*m.dx,z:zmin+(row+d/2)*m.dz,range:Math.hypot(w*m.dx,d*m.dz)/2,collider:null});
+    groundChunks.push({p,idx,mesh,x:xmin+(col+(w-1)/2)*m.dx,z:zmin+(row+(d-1)/2)*m.dz,range:Math.hypot(w*m.dx,d*m.dz)/2,collider:null,
+      tileFile:aerialIndex.get(row+':'+col),u0:col/(m.nx-1),v0:1-(row+d-1)/(m.nz-1),us:(w-1)/(m.nx-1),vs:(d-1)/(m.nz-1)});
   }
 
   status('Loading real LOD2 building meshes…');
@@ -108,10 +136,10 @@ async function run(){
       const dist=Math.hypot(c.x-x,c.z-z)-c.range;
       if(!c.collider&&dist<350)c.collider=world.createCollider(RAPIER.ColliderDesc.trimesh(c.p,c.idx).setFriction(.95));
       else if(c.collider&&dist>550){world.removeCollider(c.collider,true);c.collider=null}
-      if(c.mesh)for(const part of c.mesh.children)part.castShadow=dist<150;
+      if(c.mesh?.isGroup)for(const part of c.mesh.children)part.castShadow=dist<150;
     }
   }
-  updateColliders(m.spawn[0],m.spawn[2]);
+  updateColliders(m.spawn[0],m.spawn[2]);streamAerial(m.spawn[0],m.spawn[2]);
 
   status('Generating roads from OpenStreetMap…');
   const roadPositions=[],linePositions=[],pavingPositions=[];
@@ -125,11 +153,20 @@ async function run(){
       out.push(...l,...l2,...r,...r,...l2,...r2)
     }
   }
+  // Rounded joints close the holes between independent road strips.
+  function cap(point,radius,out,offset){
+    const [x,z]=point;const center=[x,ground(x,z)+offset,z];
+    for(let i=0;i<12;i++){
+      const at=a=>{const xx=x+Math.cos(a)*radius,zz=z+Math.sin(a)*radius;return [xx,ground(xx,zz)+offset,zz]};
+      out.push(...center,...at((i+1)*Math.PI/6),...at(i*Math.PI/6));
+    }
+  }
   for(const r of m.roads)for(let i=1;i<r.points.length;i++){
     const a=r.points[i-1],b=r.points[i],len=Math.hypot(b[0]-a[0],b[1]-a[1]);
     if(len<.01)continue;
     const cobble=['paving_stones','sett','cobblestone'].includes(r.surface);
     strip(a,b,r.width,cobble?pavingPositions:roadPositions,.17);
+    if(i>1)cap(a,r.width/2,cobble?pavingPositions:roadPositions,.17);
     if(r.width>=5.5&&!['track','service','living_street'].includes(r.type)){
       for(let t=0;t<len;t+=8){let q=Math.min(t+3,len);strip([lerp(a[0],b[0],t/len),lerp(a[1],b[1],t/len)],[lerp(a[0],b[0],q/len),lerp(a[1],b[1],q/len)],.10,linePositions,.19)}
     }
@@ -149,15 +186,93 @@ async function run(){
   roadMesh(pavingPositions,pavingTex,0xc4c1b6,-1);
   roadMesh(linePositions,null,0xe3e1ce,-4);
 
-  // Low-cost instanced placeholder vegetation, only on mapped forest/tree positions.
-  const n=m.trees.length;
-  if(n){
-    const trunk=new THREE.InstancedMesh(new THREE.CylinderGeometry(.12,.22,1,6),new THREE.MeshStandardMaterial({color:0x6e5b44}),n);
-    const crown=new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1,1),new THREE.MeshStandardMaterial({color:0x527343,roughness:1}),n*2);
-    const o=new THREE.Object3D();
-    for(let i=0;i<n;i++){const [x,y,z,h]=m.trees[i];o.rotation.set(0,i*2.4,0);o.position.set(x,y+h*.26,z);o.scale.set(h*.17,h*.52,h*.17);o.updateMatrix();trunk.setMatrixAt(i,o.matrix);
-      for(let j=0;j<2;j++){o.position.set(x+(j? h*.10:0),y+h*(j?.77:.63),z);o.scale.set(h*(j?.22:.28),h*.33,h*(j?.22:.28));o.updateMatrix();crown.setMatrixAt(i*2+j,o.matrix);crown.setColorAt(i*2+j,new THREE.Color().setHSL(.24+(i%7)*.008,.27+(i%5)*.04,.29+(i%4)*.025))}
-    }trunk.instanceMatrix.needsUpdate=true;crown.instanceMatrix.needsUpdate=true;scene.add(trunk,crown);
+  status('Planting measured trees and rendering water…');
+  // Alpha-tested botanical foliage cards. Each cell is culled separately.
+  const leafMaterials=await Promise.all(Array.from({length:6},(_,i)=>imageLoader.loadAsync(root+'foliage_'+Math.floor(i/3)+'_'+i%3+'.png').then(t=>{
+    t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=4;
+    return new THREE.MeshStandardMaterial({map:t,alphaTest:.45,side:THREE.DoubleSide,roughness:1,depthWrite:true});
+  })));
+  const treeCells=new Map(),treeTile=128;
+  for(const tree of m.trees){
+    const [x,y,z,h,d=h*.55,pine=0]=tree;
+    const cx=Math.floor(x/treeTile),cz=Math.floor(z/treeTile),key=cx+':'+cz;
+    if(!treeCells.has(key))treeCells.set(key,{x:(cx+.5)*treeTile,z:(cz+.5)*treeTile,trees:[]});
+    treeCells.get(key).trees.push([x,y,z,h,d,pine]);
+  }
+  const plane=new THREE.PlaneGeometry(1,1),dummy=new THREE.Object3D(),color=new THREE.Color();
+  const cellMeshes=[];
+  for(const cell of treeCells.values()){
+    const groups=Array.from({length:6},()=>[]);
+    for(const t of cell.trees){const key=(t[5]?3:0)+Math.abs(Math.floor(t[0]*13+t[2]*17))%3;groups[key].push(t)}
+    const near=new THREE.Group(),far=new THREE.Group();
+    groups.forEach((list,i)=>{
+      if(!list.length)return;
+      for(const [group,cardCount] of [[near,3],[far,2]]){
+        const mesh=new THREE.InstancedMesh(plane,leafMaterials[i],list.length*cardCount);
+        let j=0;
+        for(const [x,y,z,h,d] of list){
+          const turn=(x*1.163+z*.753)%Math.PI;
+          for(let k=0;k<cardCount;k++){
+            dummy.position.set(x,y+h*.5,z);dummy.scale.set(Math.max(d,.8)*1.08,h,1);
+            dummy.rotation.set(0,turn+k*Math.PI/cardCount,0);dummy.updateMatrix();
+            mesh.setMatrixAt(j,dummy.matrix);color.setScalar(.83+Math.abs(Math.sin(x*23+z*17))*.17);mesh.setColorAt(j++,color);
+          }
+        }
+        mesh.instanceMatrix.needsUpdate=true;mesh.castShadow=group===near;mesh.receiveShadow=true;mesh.computeBoundingSphere();group.add(mesh);
+      }
+    });
+    near.visible=false;far.visible=false;scene.add(near,far);cellMeshes.push({...cell,trees:undefined,near,far});
+  }
+  function updateVegetation(x,z){
+    for(const c of cellMeshes){const d=Math.hypot(c.x-x,c.z-z);
+      c.near.visible=d<230;c.far.visible=d>=230&&d<1450;
+    }
+  }
+  updateVegetation(m.spawn[0],m.spawn[2]);
+  // Render only mapped water polygons; no arbitrary sea plane over low-lying land.
+  let waterMat=null;
+  if(m.water?.length){
+    const p=new Float32Array(m.water.flat()),uv=new Float32Array(p.length/3*2);
+    for(let i=0;i<p.length/3;i++){uv[i*2]=p[3*i]/12;uv[i*2+1]=p[3*i+2]/12}
+    waterMat=new THREE.MeshStandardMaterial({color:0x397a89,metalness:.28,roughness:.23,side:THREE.DoubleSide,transparent:true,opacity:.92});
+    waterMat.onBeforeCompile=s=>{
+      s.uniforms.waterTime={value:0};waterMat.userData.time=s.uniforms.waterTime;
+      s.vertexShader='varying vec3 waterPos;\\n'+s.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\\nwaterPos=position;');
+      s.fragmentShader='uniform float waterTime; varying vec3 waterPos;\\n'+s.fragmentShader.replace('#include <normal_fragment_maps>',`
+        #include <normal_fragment_maps>
+        normal=normalize(normal+vec3(sin(waterPos.x*1.2+waterPos.z*.45+waterTime*.7)*.045,sin(waterPos.z*1.3-waterTime*.5)*.025,cos(waterPos.z*.8+waterTime*.6)*.045));
+      `);
+    };
+    const water=new THREE.Mesh(geom(p,null,uv),waterMat);scene.add(water);
+  }
+
+  // Roadside lighting is intentionally approximate, limited to major mapped streets.
+  const lampPositions=[],lampGrid=new Set();
+  for(const r of m.roads){
+    if(!['primary','secondary','tertiary'].includes(r.type))continue;
+    let gap=15;
+    for(let i=1;i<r.points.length;i++){
+      const a=r.points[i-1],b=r.points[i],dx=b[0]-a[0],dz=b[1]-a[1],l=Math.hypot(dx,dz);
+      if(l<.01)continue;
+      while(gap<l){
+        const x=a[0]+dx*gap/l-dz/l*(r.width/2+1.8),z=a[1]+dz*gap/l+dx/l*(r.width/2+1.8);
+        const key=Math.round(x/22)+':'+Math.round(z/22);
+        if(!lampGrid.has(key)){lampGrid.add(key);lampPositions.push([x,ground(x,z),z,Math.atan2(dx,dz)])}
+        gap+=35;
+      }gap-=l;
+    }
+  }
+  if(lampPositions.length){
+    const poleMat=new THREE.MeshStandardMaterial({color:0x727a7e,metalness:.65,roughness:.48});
+    const bulbMat=new THREE.MeshStandardMaterial({color:0xdce2d7,roughness:.3});
+    const poles=new THREE.InstancedMesh(new THREE.CylinderGeometry(.045,.085,6.7,8),poleMat,lampPositions.length);
+    const arms=new THREE.InstancedMesh(new THREE.BoxGeometry(.055,.055,1.4),poleMat,lampPositions.length);
+    const lights=new THREE.InstancedMesh(new THREE.BoxGeometry(.26,.12,.55),bulbMat,lampPositions.length);
+    lampPositions.forEach(([x,y,z,yaw],i)=>{
+      dummy.scale.setScalar(1);dummy.rotation.set(0,0,0);dummy.position.set(x,y+3.35,z);dummy.updateMatrix();poles.setMatrixAt(i,dummy.matrix);
+      dummy.rotation.y=yaw+Math.PI/2;dummy.position.set(x-Math.cos(yaw)*.65,y+6.65,z+Math.sin(yaw)*.65);dummy.updateMatrix();arms.setMatrixAt(i,dummy.matrix);
+      dummy.position.set(x-Math.cos(yaw)*1.3,y+6.60,z+Math.sin(yaw)*1.3);dummy.updateMatrix();lights.setMatrixAt(i,dummy.matrix);
+    });scene.add(poles,arms,lights);
   }
 
   status('Loading BMW and vehicle physics…');
@@ -394,13 +509,14 @@ async function run(){
     camera.fov=lerp(camera.fov,mode===1?75:65+Math.min(12,speed*.23),.06);camera.updateProjectionMatrix();
     car.visible=mode!==1;
     sun.position.copy(car.position).add(new THREE.Vector3(-65,100,-40));sun.target.position.copy(car.position);
-    if(now-colliderTick>300){updateColliders(car.position.x,car.position.z);colliderTick=now}
+    if(now-colliderTick>300){updateColliders(car.position.x,car.position.z);streamAerial(car.position.x,car.position.z);updateVegetation(car.position.x,car.position.z);colliderTick=now}
     frames++;elapsed+=dt;if(elapsed>.6){fps=Math.round(frames/elapsed);frames=0;elapsed=0}
     $('speed').textContent=String(Math.round(speed*3.6)).padStart(3,'0');
     $('gear').textContent=gear===-1?'R':String(gear);
     $('rpm').style.setProperty('--rpm',Math.round(rpm/6500*100)+'%');
     $('detail').textContent=paused?'PAUSED — ESC TO RESUME':modelNote+' / '+Math.round(rpm)+' RPM / '+fps+' FPS';
     if(now-lastMap>120){mini();updateStreet();lastMap=now}
+    sky.position.copy(camera.position);if(waterMat?.userData.time)waterMat.userData.time.value=now/1000;
     renderer.render(scene,camera);
   });
   window.haapsalu={world,body,vehicle:vc,manifest:m,reset};

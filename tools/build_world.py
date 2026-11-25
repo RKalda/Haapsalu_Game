@@ -14,6 +14,7 @@ from shapely.geometry import shape, box, LineString, Point
 from shapely.ops import transform as geom_transform
 from shapely.strtree import STRtree
 import mapbox_earcut
+from world_sources import BuildingInfo, measured_trees, aerial_tiles, foliage_sprites
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "public/world"
@@ -70,15 +71,17 @@ def triangulate(face):
     coords=np.vstack(rings)[:,:3]
     ind=mapbox_earcut.triangulate_float64(np.ascontiguousarray(coords[:,keep]),np.cumsum([len(r) for r in rings],dtype=np.uint32))
     return coords[ind],abs(normal[2])/length
-def main():
-    p=argparse.ArgumentParser();p.add_argument("--step",type=float,default=6);p.add_argument("--texture-size",type=int,default=8192)
+def main(report):
+    p=argparse.ArgumentParser();p.add_argument("--step",type=float,default=4);p.add_argument("--texture-size",type=int,default=4096);p.add_argument("--tile-pixels",type=int,default=1280);p.add_argument("--no-hd-tiles",action="store_true")
     args=p.parse_args()
     if args.step<2 or args.texture_size<256: raise ValueError("Invalid resolution")
     OUT.mkdir(parents=True,exist_ok=True)
     make_materials()
+    foliage_sprites(OUT)
     (OUT/"manifest.json").unlink(missing_ok=True)
     # Fixed local origin, north is -Z. Grid is aligned to the requested geographic bounding box.
     w,s,e,n=transform_bounds("EPSG:4326",CRS,*BBOX,densify_pts=21)
+    metadata=BuildingInfo(ROOT,(w,s,e,n),report)
     nx,nz=math.ceil((e-w)/args.step)+1,math.ceil((n-s)/args.step)+1
     dx,dz=(e-w)/(nx-1),(n-s)/(nz-1)
     grid_bounds=(w-dx/2,s-dz/2,e+dx/2,n+dz/2)
@@ -117,6 +120,8 @@ def main():
         if not mask.any(): raise RuntimeError("No orthophoto coverage in the requested map")
         rgb[:,~mask]=np.array([48,83,91],dtype=np.uint8)[:,None]
         Image.fromarray(np.moveaxis(rgb,0,-1)).save(OUT/"ground.jpg",quality=88)
+        tiles=[] if args.no_hd_tiles else aerial_tiles(ortho,OUT,(w,s,e,n),nx,nz,pixels=max(256,min(2048,args.tile_pixels)))
+        report["aerialTiles"]=len(tiles)
         # Read real 3D faces directly from official file geodatabase.
         gdbs=list(ROOT.glob("*gdb.zip"))
         if not gdbs: raise RuntimeError("Building GDB ZIP is missing")
@@ -135,8 +140,9 @@ def main():
                 if not c.sub_crs_list or c.sub_crs_list[0].to_epsg()!=3301:
                     print("Skipping non-L-EST97 layer",layer,info["crs"]);continue
             print("Reading buildings:",layer,typ)
-            meta,fids,geom,fields=pyogrio.raw.read(db,layer=layer,bbox=(w,s,e,n),return_fids=True,columns=[])
-            for g in from_wkb(geom):
+            meta,fids,geom,fields=pyogrio.raw.read(db,layer=layer,bbox=(w,s,e,n),return_fids=True)
+            report.setdefault("lod2Layers",[]).append({"layer":str(layer),"fields":list(meta["fields"])})
+            for gi,g in enumerate(from_wkb(geom)):
                 if g is None or g.is_empty: continue
                 bw,bs,be,bn=g.bounds
                 if not (w<(bw+be)/2<e and s<(bs+bn)/2<n): continue
@@ -152,6 +158,8 @@ def main():
                 bh=float(allpts[:,2].max()-low)
                 # Approximate facade families. No source facade photographs are present.
                 family=1 if bh<9 and rng.random()<.65 else 2 if rng.random()<.28 else 0
+                row={name:col[gi] for name,col in zip(meta["fields"],fields)}
+                family,wall,floor_h,plain=metadata.style(row,g,bh,rng,wall,family)
                 # Sample actual roof colour from the aerial image, not a random palette.
                 samples=[]
                 for pts,slope in faces:
@@ -175,8 +183,8 @@ def main():
                         horizontal=xyz[:,[0,2]]
                         a=horizontal[np.argmax(np.linalg.norm(horizontal-horizontal[0],axis=1))]-horizontal[0]
                         a=a/max(np.linalg.norm(a),1e-6)
-                        uv=np.column_stack(((horizontal-horizontal[0])@a/2.7,(xyz[:,1]-low)/2.8))
-                    kind=3 if isroof else family if bh>3.2 else 4
+                        uv=np.column_stack(((horizontal-horizontal[0])@a/2.7,(xyz[:,1]-low)/floor_h))
+                    kind=3 if isroof else family if bh>3.2 and not plain else 4
                     chunks[key].append(np.column_stack((xyz,col,uv,np.full(len(pts),kind))).astype("<f4"))
                 footprints.append(box(bw-cx,cy-bn,be-cx,cy-bs));count+=1
         if not count: raise RuntimeError("No usable 3D buildings in this area; inspect GDB layers and CRS.")
@@ -184,10 +192,11 @@ def main():
         for (a,b),data in sorted(chunks.items()):
             name=f"b_{a}_{b}.dat";v=np.concatenate(data);v.tofile(OUT/name)
             buildings.append({"file":name,"center":[a*500+250,b*500+250],"vertices":len(v)})
+    report["buildingStats"]=dict(metadata.stats)
     raw=ROOT/"export.geojson"
     if is_pointer(raw): raise RuntimeError("OSM file is only an LFS pointer")
     osm=json.loads(raw.read_text(encoding="utf-8-sig"))
-    clip=box(*bounds);roads=[];trees=[];forest=[];spawn_options=[]
+    clip=box(*bounds);roads=[];trees=[];forest=[];spawn_options=[];water=[];crossings=[]
     def tolocal(x,y,z=None):
         a,b=PROJ.transform(x,y);return np.asarray(a)-cx,cy-np.asarray(b)
     def parts(g,kind):
@@ -214,6 +223,17 @@ def main():
                         x,z=(a[0]+b[0])/2,(a[1]+b[1])/2
                         if math.dist(a,b)>12 and valid_at(x,z):
                             spawn_options.append((math.hypot(x,z),x,z,math.atan2(b[0]-a[0],b[1]-a[1])))
+        if prop.get("natural")=="water" or prop.get("water") or prop.get("waterway")=="riverbank":
+            for poly in parts(g,"Polygon"):
+                if poly.area<20:continue
+                rings=[np.asarray(poly.exterior.coords)[:-1]]+[np.asarray(r.coords)[:-1] for r in poly.interiors]
+                if len(rings[0])<3:continue
+                xy=np.ascontiguousarray(np.vstack(rings),dtype=np.float64)
+                ind=mapbox_earcut.triangulate_float64(xy,np.cumsum([len(r) for r in rings],dtype=np.uint32))
+                # inland water elevation from perimeter DTM; use sea level for bays where known
+                level=0.0 if prop.get("water") in ("sea","bay","lagoon") else float(np.median([height(x,z) for x,z in rings[0]]))-.08
+                water.extend(np.column_stack((xy[ind,0],np.full(len(ind),level),xy[ind,1])).round(3).tolist())
+        if highway=="crossing" and g.geom_type=="Point":crossings.append([g.x,g.y])
         if prop.get("natural")=="tree" and g.geom_type=="Point":
             trees.append([g.x,g.y])
         if prop.get("natural")=="wood" or prop.get("landuse")=="forest":
@@ -224,14 +244,16 @@ def main():
     treeindex=STRtree(blocked)
     def tree_ok(x,z):
         return valid_at(x,z) and not len(treeindex.query(Point(x,z),predicate="intersects"))
-    for poly in forest:
+    # Use official measured vegetation, not random OSM trees, when the GPKG is available.
+    official=measured_trees(ROOT,(w,s,e,n),cx,cy,height,valid_at,treeindex,report)
+    for poly in ([] if official is not None else forest):
         a,b,c,d=poly.bounds
         for x in np.arange(a,c,17):
             for z in np.arange(b,d,17):
                 xx=x+rng.uniform(0,12);zz=z+rng.uniform(0,12)
                 if poly.contains(Point(xx,zz)) and tree_ok(xx,zz):
                     trees.append([xx,zz])
-    trees=[[round(x,2),round(height(x,z),2),round(z,2),round(float(rng.uniform(5,13)),2)] for x,z in trees if tree_ok(x,z)]
+    trees=official if official is not None else [[round(x,2),round(height(x,z),2),round(z,2),round(float(rng.uniform(5,13)),2)] for x,z in trees if tree_ok(x,z)]
     # Export only validated on-ground road segments for teleportation.
     for road in roads:
         road["teleport"]=[i for i,(a,b) in enumerate(zip(road["points"],road["points"][1:])) if math.dist(a,b)>2 and valid_at(*a) and valid_at(*b) and valid_at((a[0]+b[0])/2,(a[1]+b[1])/2)]
@@ -239,9 +261,10 @@ def main():
     car=ROOT/"assets/cars/bmw_3-series_e36_street.glb"
     if not car.exists() or is_pointer(car):raise RuntimeError("Download the BMW GLB with git lfs pull.")
     shutil.copyfile(car,OUT/"car.glb")
-    manifest={"version":2,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
+    report["waterTriangles"]=len(water)//3
+    manifest={"version":3,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
       "terrainCoverage":round(float(valid.mean()),4),"orthoCoverage":round(float(mask.mean()),4),
-      "buildings":buildings,"buildingCount":count,"roads":roads,"trees":trees,
+      "buildings":buildings,"buildingCount":count,"roads":roads,"trees":trees,"aerialTiles":tiles,"water":water,"crossings":crossings,
       "spawn":[sx,height(sx,sz)+1.0,sz,yaw]}
     (OUT/"manifest.json").write_text(json.dumps(manifest,separators=(",",":")),encoding="utf-8")
     print(f"Built {count} buildings, {len(roads)} road segments, {len(trees)} trees, {nx}x{nz} height grid.")
@@ -287,4 +310,10 @@ def make_materials():
     texture("PavingStones144",155).save(OUT/"paving.jpg",quality=90)
     texture("Grass001",110).save(OUT/"grass.jpg",quality=90)
 
-if __name__=="__main__":main()
+if __name__=="__main__":
+    report={}
+    OUT.mkdir(parents=True,exist_ok=True)
+    try:main(report)
+    finally:
+        (OUT/"build_report.json").write_text(json.dumps(report,indent=2,ensure_ascii=False,default=str),encoding="utf-8")
+        print("Data inspection report:",OUT/"build_report.json")

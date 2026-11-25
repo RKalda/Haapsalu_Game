@@ -34,3 +34,14 @@ Initial implementation committed against the visible repository asset manifest. 
 ## v0.2 visual and navigation pass
 
 Rebuild world data before running: `python tools/build_world.py` (default aerial texture now 8192; use `--texture-size 4096` on low memory). M or click minimap opens a searchable, pan/zoom city map; choose a road and teleport. Current street uses OSM names, not guessed names. Aerial map toggle uses the same orthophoto. Teleport targets only terrain-validated road segments. Materials are extracted from supplied texture ZIPs where possible; procedural facade modules, windows and roof texture with aerial-derived approximate roof colours are not photographic facade reconstructions. Roads have dense draping, opaque textured surfaces and approximate shoulders. This is not a surveyed sidewalk or road marking dataset. The original vegetation is still placeholder. No new full runtime test was possible in the connector environment.
+
+## v0.3 environment pass (requires rebuilding)
+
+- Reads the new ETAK/EHR building GPKG, tries registry ID matching before unambiguous spatial matching, and uses readable exterior finish / floor count fields when present. Structural material is only a proxy. The report records matched and inferred counts. No claim of exact individual facade colors, doors or windows.
+- Reads official measured vegetation GPKG; real positions and heights, crown diameter when readable, broadleaf/conifer when the field contains recognized text. Unknown types are reported and rendered as broadleaf. Uses original alpha-tested foliage impostors, not the uninspected third-party pine GLB. Groups have distance-based LOD and culling.
+- Ground tiles are compiled from the supplied original orthophotos and streamed around the car (default 1280 px tiles). Main aerial texture is a 4096 overview. Use --no-hd-tiles only to debug. Default terrain step now 4 m.
+- Sky, lighting, approximate road lamps, rounded road joins and mapped water surfaces. Coastline/sea coverage depends on input OSM polygons; no fictional sea plane. Lamps are approximate and not surveyed. 
+- New report: public/world/build_report.json. Share this if source schemas do not match. Compilation fails explicitly when the supplied vegetation GPKG cannot be interpreted; adjust mappings in tools/world_sources.py rather than inventing heights.
+- The 1917px Fotoladu photos have geographic footprints but not calibrated camera poses. They are retained as reference; do not project them directly as if camera calibration were known.
+
+Run `python tools/build_world.py`, then `npm run dev`. Optional `--tile-pixels 2048` increases near-ground detail and GPU memory. Runtime and actual data schema have not been verified in the GitHub connector environment.
