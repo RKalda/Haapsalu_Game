@@ -16,6 +16,7 @@ from shapely.strtree import STRtree
 import mapbox_earcut
 from world_sources import BuildingInfo, measured_trees, aerial_tiles, foliage_sprites
 from photo_facades import PhotoFacades, frame as wall_frame
+from topography import compile_details
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "public/world"
@@ -191,14 +192,16 @@ def main(report):
                     col=np.tile(roof if isroof else wall,(len(pts),1))
                     # Per-face planar metric UVs; windows use floor-relative height.
                     if isroof:
-                        uv=xyz[:,[0,2]]/2.0
+                        uv=np.column_stack(((xyz[:,0]-bounds[0])/(bounds[2]-bounds[0]),1-(xyz[:,2]-bounds[1])/(bounds[3]-bounds[1])))
                     else:
                         horizontal=xyz[:,[0,2]]
                         a=horizontal[np.argmax(np.linalg.norm(horizontal-horizontal[0],axis=1))]-horizontal[0]
                         a=a/max(np.linalg.norm(a),1e-6)
                         uv=np.column_stack(((horizontal-horizontal[0])@a/2.7,(xyz[:,1]-low)/floor_h))
                     f=frames.get(fi)
+                    # Use actual orthophoto roof pixels, rather than a repeated generic roof.
                     kind=3 if isroof else [4,5,6][family]
+                    if isroof:col=np.ones_like(col)
                     if not isroof and f is not None:
                         _,width,fh,u,yy=f
                         if not plain and width>=3.4 and fh>=2.8 and abs(fh/floor_h-round(fh/floor_h))<.33 and yy.min()<low+.8:
@@ -241,7 +244,12 @@ def main(report):
             for line in parts(g,"LineString"):
                 pts=[[round(x,2),round(z,2)] for x,z,*_ in line.coords]
                 if len(pts)<2:continue
-                roads.append({"points":pts,"width":width,"type":highway,"name":prop.get("name") or prop.get("name:et") or "", "surface":prop.get("surface",""),"ref":prop.get("ref","")})
+                roadname=prop.get("name") or prop.get("name:et") or ""
+                surface=prop.get("surface","")
+                # Posti was reconstructed with stone setts (2022); Karja is also stone-paved.
+                if roadname.strip().lower() in ("posti","posti tänav","posti tn","karja","karja tänav","karja tn"):
+                    surface="sett"
+                roads.append({"points":pts,"width":width,"type":highway,"name":roadname, "surface":surface,"ref":prop.get("ref",""),"lanes":prop.get("lanes",""),"marking":prop.get("lane_markings","")})
                 if highway not in ("track","service") and line.length>20:
                     for a,b in zip(pts,pts[1:]):
                         x,z=(a[0]+b[0])/2,(a[1]+b[1])/2
@@ -262,6 +270,7 @@ def main(report):
             trees.append([g.x,g.y])
         if prop.get("natural")=="wood" or prop.get("landuse")=="forest":
             forest.extend(parts(g,"Polygon"))
+    details=compile_details(ROOT,osm,tolocal,bounds,height,footprints,report)
     if not roads or not spawn_options:raise RuntimeError("No valid drivable road in terrain coverage. Check tiles and OSM.")
     # Seeded forest sampling, avoiding real buildings and mapped streets.
     blocked=footprints+[LineString(r["points"]).buffer(r["width"]/2+2) for r in roads]
@@ -290,7 +299,7 @@ def main(report):
     if pine_asset:shutil.copyfile(pine,OUT/"pine.glb")
     report["pineAssetAvailable"]=pine_asset
     report["waterTriangles"]=len(water)//3
-    manifest={"version":4,"facadeAtlases":photo_atlases,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
+    manifest={"version":5,"details":details,"facadeAtlases":photo_atlases,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
       "terrainCoverage":round(float(valid.mean()),4),"orthoCoverage":round(float(mask.mean()),4),
       "buildings":buildings,"buildingCount":count,"roads":roads,"trees":trees,"aerialTiles":tiles,"pineAsset":pine_asset,"water":water,"crossings":crossings,
       "spawn":[sx,height(sx,sz)+1.0,sz,yaw]}
@@ -335,11 +344,16 @@ def make_materials():
     wood.save(OUT/"wood_plain.jpg",quality=90)
     brick.save(OUT/"brick_plain.jpg",quality=90)
     texture("RoofingTiles001",195,True).save(OUT/"roof.jpg",quality=90)
-    texture("asphalt_03",80).save(OUT/"asphalt.jpg",quality=92)
+    asphalt=texture("asphalt_03",80)
+    # Asphalt photographed under warm light should not become a brown road.
+    asphalt=ImageOps.grayscale(asphalt).convert("RGB")
+    asphalt.save(OUT/"asphalt.jpg",quality=92)
+    texture("PavingStones033",110).save(OUT/"cobble.jpg",quality=94)
+    texture("Bricks100",140).save(OUT/"masonry.jpg",quality=94)
     texture("PavingStones144",155).save(OUT/"paving.jpg",quality=90)
     texture("Grass001",110).save(OUT/"grass.jpg",quality=90)
     # Prefer supplied OpenGL normal maps. Otherwise derive a restrained detail normal.
-    for name,prefix in (("asphalt","asphalt_03"),("paving","PavingStones144"),("roof","RoofingTiles001"),("wall_plain","Plaster001"),("wood_plain","WoodSiding001"),("brick_plain","Bricks025"),("facade_plaster",None),("facade_wood",None),("facade_brick",None)):
+    for name,prefix in (("asphalt","asphalt_03"),("cobble","PavingStones033"),("masonry","Bricks100"),("paving","PavingStones144"),("roof","RoofingTiles001"),("wall_plain","Plaster001"),("wood_plain","WoodSiding001"),("brick_plain","Bricks025"),("facade_plaster",None),("facade_wood",None),("facade_brick",None)):
         normal=None
         if prefix:
             for path in sorted((ROOT/"assets/textures").glob(prefix+"*.zip")):

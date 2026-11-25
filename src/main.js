@@ -23,7 +23,7 @@ async function run(){
   status('Loading map manifest…');
   let m;
   try{m=await (await data('manifest.json')).json()}catch(e){throw Error('World not compiled. Run python tools/build_world.py from the project folder. '+e.message)}
-  if(m.version!==4)throw Error('Old world data. Re-run python tools/build_world.py.');
+  if(m.version!==5)throw Error('Old world data. Re-run python tools/build_world.py.');
   const [xmin,zmin,xmax,zmax]=m.bounds;
   const H=new Float32Array(await (await data('height.dat')).arrayBuffer());
   if(H.length!==m.nx*m.nz)throw Error('Height grid size does not match manifest');
@@ -118,6 +118,7 @@ async function run(){
   }
   const normalMaps=await Promise.all(['facade_plaster','facade_wood','facade_brick','roof','wall_plain','wood_plain','brick_plain','asphalt','paving'].map(normalTexture));
   const buildingMats=facadeTex.map((map,i)=>new THREE.MeshStandardMaterial({map,normalMap:normalMaps[i],normalScale:new THREE.Vector2(.48,.48),vertexColors:true,roughness:.83,side:THREE.DoubleSide}));
+  buildingMats[3].map=texture;buildingMats[3].normalMap=null;
   for(const file of m.facadeAtlases||[]){
     const t=await imageLoader.loadAsync(root+file);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=4;
     buildingMats.push(new THREE.MeshStandardMaterial({map:t,roughness:.9,side:THREE.DoubleSide,vertexColors:true}));
@@ -150,7 +151,8 @@ async function run(){
   updateColliders(m.spawn[0],m.spawn[2]);streamAerial(m.spawn[0],m.spawn[2]);
 
   status('Generating roads from OpenStreetMap…');
-  const roadPositions=[],linePositions=[],pavingPositions=[];
+  const roadPositions=[],linePositions=[],pavingPositions=[],cobblePositions=[],pathPositions=[];
+  const [cobbleTex,masonryTex,cobbleNormal,masonryNormal]=await Promise.all([repeatTexture('cobble'),repeatTexture('masonry'),normalTexture('cobble'),normalTexture('masonry')]);
   function strip(a,b,width,out,offset,lateral=0){
     const dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);if(len<.01)return;
     const ox=-dz/len,oz=dx/len;
@@ -173,9 +175,9 @@ async function run(){
     const a=r.points[i-1],b=r.points[i],len=Math.hypot(b[0]-a[0],b[1]-a[1]);
     if(len<.01)continue;
     const cobble=['paving_stones','sett','cobblestone'].includes(r.surface);
-    strip(a,b,r.width,cobble?pavingPositions:roadPositions,.17);
-    if(i>1)cap(a,r.width/2,cobble?pavingPositions:roadPositions,.17);
-    if(r.width>=5.5&&!['track','service','living_street'].includes(r.type)){
+    strip(a,b,r.width,cobble?cobblePositions:roadPositions,.17);
+    if(i>1)cap(a,r.width/2,cobble?cobblePositions:roadPositions,.17);
+    if(!cobble&&r.marking!=="no"&&r.width>=5.5&&!['track','service','living_street'].includes(r.type)){
       for(let t=0;t<len;t+=8){let q=Math.min(t+3,len);strip([lerp(a[0],b[0],t/len),lerp(a[1],b[1],t/len)],[lerp(a[0],b[0],q/len),lerp(a[1],b[1],q/len)],.10,linePositions,.19)}
     }
     // Approximate paved shoulders only on larger roads, not every residential street.
@@ -184,15 +186,98 @@ async function run(){
       strip(a,b,1.2,pavingPositions,.12,-r.width/2-.6);
     }
   }
-  function roadMesh(vertices,map,color,offset){
+  function roadMesh(vertices,map,color,offset,scale=3,normal=null){
+    if(!vertices.length)return null;
     const p=new Float32Array(vertices),uv=new Float32Array(p.length/3*2);
-    for(let i=0;i<p.length/3;i++){uv[i*2]=p[i*3]/3;uv[i*2+1]=p[i*3+2]/3}
-    const mesh=new THREE.Mesh(geom(p,null,uv),new THREE.MeshStandardMaterial({map,color,normalMap:map===asphaltTex?normalMaps[7]:map===pavingTex?normalMaps[8]:null,normalScale:new THREE.Vector2(.65,.65),roughness:1,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:offset,polygonOffsetUnits:offset}));
+    for(let i=0;i<p.length/3;i++){uv[i*2]=p[i*3]/scale;uv[i*2+1]=p[i*3+2]/scale}
+    const mesh=new THREE.Mesh(geom(p,null,uv),new THREE.MeshStandardMaterial({map,color,normalMap:normal|| (map===asphaltTex?normalMaps[7]:map===pavingTex?normalMaps[8]:null),normalScale:new THREE.Vector2(.65,.65),roughness:1,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:offset,polygonOffsetUnits:offset}));
     mesh.receiveShadow=true;scene.add(mesh);return mesh;
   }
   roadMesh(roadPositions,asphaltTex,0xffffff,-2);
   roadMesh(pavingPositions,pavingTex,0xc4c1b6,-1);
   roadMesh(linePositions,null,0xe3e1ce,-4);
+  roadMesh(cobblePositions,cobbleTex,0xc6c6c6,-3,2.0,cobbleNormal);
+  const details=m.details||{walls:[],paths:[],areas:[],graves:[],pois:[]};
+  for(const path of details.paths||[]){
+    for(let i=1;i<path.points.length;i++)strip(path.points[i-1],path.points[i],path.width,pathPositions,.095);
+  }
+  roadMesh(pathPositions,pavingTex,0xc5c3b8,-1,2.2);
+  // Land-use polygons are clipped to actual GIS outlines. Subdivide so they follow the DTM.
+  function drapeTriangle(a,b,c,out,offset,depth=0){
+    const edges=[Math.hypot(a[0]-b[0],a[1]-b[1]),Math.hypot(b[0]-c[0],b[1]-c[1]),Math.hypot(c[0]-a[0],c[1]-a[1])];
+    const max=Math.max(...edges);
+    if(max>6&&depth<10){
+      const mid=(p,q)=>[(p[0]+q[0])/2,(p[1]+q[1])/2];
+      if(edges[0]===max){const d=mid(a,b);drapeTriangle(a,d,c,out,offset,depth+1);drapeTriangle(d,b,c,out,offset,depth+1)}
+      else if(edges[1]===max){const d=mid(b,c);drapeTriangle(a,b,d,out,offset,depth+1);drapeTriangle(a,d,c,out,offset,depth+1)}
+      else{const d=mid(c,a);drapeTriangle(a,b,d,out,offset,depth+1);drapeTriangle(d,b,c,out,offset,depth+1)}
+      return;
+    }
+    for(const [x,z] of [a,b,c])out.push(x,ground(x,z)+offset,z);
+  }
+  const surfaces={parking:[],paving:[],cemetery:[]};
+  const sea=[],inland=[];
+  for(const area of details.areas||[]){
+    const t=area.triangles;
+    if(area.kind==='sea'||area.kind==='water'){
+      const arr=area.kind==='sea'?sea:inland;
+      const y=area.kind==='sea'?.06:Math.min(...t.map(p=>ground(p[0],p[1])))+.06;
+      for(const p of t)arr.push(p[0],y,p[1]);
+    }else if(surfaces[area.kind])for(let i=0;i<t.length;i+=3)drapeTriangle(t[i],t[i+1],t[i+2],surfaces[area.kind],area.kind==='cemetery'?.035:.075);
+  }
+  roadMesh(surfaces.parking,asphaltTex,0xc5c5c5,-1);
+  roadMesh(surfaces.paving,pavingTex,0xd0cec4,-1);
+  // Do not erase real grave/vegetation detail from the aerial image with a flat grass overlay.
+  // Retain cemetery boundaries for the map and render only mapped paths, fences and grave markers.
+  const waterSurfaceMat=new THREE.MeshStandardMaterial({color:0x426e7d,roughness:.36,metalness:.15,side:THREE.DoubleSide});
+  for(const p of [sea,inland])if(p.length){const mesh=new THREE.Mesh(geom(new Float32Array(p)),waterSurfaceMat);scene.add(mesh);}
+  const wallCells=new Map(),wallMat=new THREE.MeshStandardMaterial({map:masonryTex,normalMap:masonryNormal,normalScale:new THREE.Vector2(.65,.65),roughness:.96,side:THREE.DoubleSide});
+  const fenceMat=new THREE.MeshStandardMaterial({color:0x51534e,roughness:.9});
+  for(const wall of details.walls||[]){
+    for(let i=1;i<wall.points.length;i++){
+      const a=wall.points[i-1],b=wall.points[i],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
+      if(len<.2)continue;
+      const count=Math.max(1,Math.ceil(len/4));
+      for(let j=0;j<count;j++){
+        const x0=lerp(a[0],b[0],j/count),z0=lerp(a[1],b[1],j/count),x1=lerp(a[0],b[0],(j+1)/count),z1=lerp(a[1],b[1],(j+1)/count);
+        const x=(x0+x1)/2,z=(z0+z1)/2,key=Math.floor(x/128)+':'+Math.floor(z/128);
+        if(!wallCells.has(key))wallCells.set(key,{x:Math.floor(x/128)*128+64,z:Math.floor(z/128)*128+64,stone:[],stoneUV:[],fence:[],fenceUV:[]});
+        const cell=wallCells.get(key),f=wall.kind==='fence',out=f?cell.fence:cell.stone,uv=f?cell.fenceUV:cell.stoneUV;
+        const ox=-dz/len*wall.width/2,oz=dx/len*wall.width/2;
+        const pts=[[x0-ox,z0-oz],[x1-ox,z1-oz],[x1+ox,z1+oz],[x0+ox,z0+oz]];
+        const bottom=pts.map(([x,z])=>[x,ground(x,z)-.08,z]);
+        const top=bottom.map(p=>[p[0],p[1]+wall.height+.08,p[2]]);
+        function face(p,q,r,s,w,h){out.push(...p,...q,...r,...p,...r,...s);uv.push(0,0,w,0,w,h,0,0,w,h,0,h)}
+        if(f){ // simple metal/wood fence proxy, not a solid masonry wall
+          const h=wall.height;
+          for(const level of [.2,.8]){
+            const v=bottom.map(p=>[p[0],p[1]+h*level,p[2]]);
+            const u=v.map(p=>[p[0],p[1]+.07,p[2]]);
+            face(v[0],v[1],u[1],u[0],len/count,.07);
+          }
+          for(const k of [0,1]){const p=bottom[k],q=bottom[(k+1)%4];const u=[p[0]+dx/len*.07,p[1],p[2]+dz/len*.07];face(p,u,[u[0],u[1]+h,u[2]],top[k],.07,h)}
+        }else{
+          for(let k=0;k<4;k++){const n=(k+1)%4;face(bottom[k],bottom[n],top[n],top[k],Math.hypot(bottom[n][0]-bottom[k][0],bottom[n][2]-bottom[k][2])/1.6,wall.height/1.6)}
+          face(top[0],top[1],top[2],top[3],len/count/1.6,wall.width/1.6);
+        }
+      }
+    }
+  }
+  for(const cell of wallCells.values()){
+    const group=new THREE.Group();scene.add(group);
+    for(const [p,uv,mat] of [[cell.stone,cell.stoneUV,wallMat],[cell.fence,cell.fenceUV,fenceMat]]){
+      if(!p.length)continue;const arr=new Float32Array(p),idx=new Uint32Array(arr.length/3);for(let i=0;i<idx.length;i++)idx[i]=i;
+      const mesh=new THREE.Mesh(geom(arr,null,new Float32Array(uv)),mat);mesh.castShadow=true;mesh.receiveShadow=true;group.add(mesh);
+      if(mat===wallMat)allChunks.push({p:arr,idx,x:cell.x,z:cell.z,range:95,collider:null,mesh:group});
+    }
+  }
+  updateColliders(m.spawn[0],m.spawn[2]);
+  // Real mapped grave/monument points only; no invented rows of graves.
+  if(details.graves?.length){
+    const graveMesh=new THREE.InstancedMesh(new THREE.BoxGeometry(.45,.75,.16),new THREE.MeshStandardMaterial({color:0x6d6b66,roughness:.96}),details.graves.length);
+    const ob=new THREE.Object3D();details.graves.forEach(([x,z],i)=>{ob.position.set(x,ground(x,z)+.375,z);ob.updateMatrix();graveMesh.setMatrixAt(i,ob.matrix)});graveMesh.castShadow=true;scene.add(graveMesh);
+  }
+
 
   status('Planting measured trees and rendering water…');
   // Alpha-tested botanical foliage cards. Each cell is culled separately.
@@ -470,6 +555,9 @@ async function run(){
     const px=x=>w/2+(x-mapX)*zoom,pz=z=>h/2+(z-mapZ)*zoom;
     if(showAerial&&texture.image)mx.drawImage(texture.image,px(xmin),pz(zmin),(xmax-xmin)*zoom,(zmax-zmin)*zoom);
     else{mx.fillStyle='#21383a';mx.fillRect(px(xmin),pz(zmin),(xmax-xmin)*zoom,(zmax-zmin)*zoom)}
+    for(const area of m.details?.areas||[]){
+      if(area.kind!=='cemetery')continue;mx.fillStyle='#46634c';const t=area.triangles;for(let i=0;i<t.length;i+=3){mx.beginPath();mx.moveTo(px(t[i][0]),pz(t[i][1]));mx.lineTo(px(t[i+1][0]),pz(t[i+1][1]));mx.lineTo(px(t[i+2][0]),pz(t[i+2][1]));mx.closePath();mx.fill()}
+    }
     for(const r of m.roads){
       mx.beginPath();r.points.forEach((a,i)=>i?mx.lineTo(px(a[0]),pz(a[1])):mx.moveTo(px(a[0]),pz(a[1])));
       mx.lineWidth=Math.max(1,r.width*zoom);mx.lineCap='round';mx.lineJoin='round';mx.strokeStyle=r.width>=7?'#e2b877':'#a1b4b4';mx.stroke();
