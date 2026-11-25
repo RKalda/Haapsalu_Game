@@ -30,3 +30,7 @@ BMW model: supplied user asset; original author/licence must be verified and cre
 ## Verification status
 
 Initial implementation committed against the visible repository asset manifest. GitHub connector only exposed LFS pointers; real archives and model, npm installation, full map build and browser driving could not be exercised in this environment. No claim of completed playtesting.
+
+## v0.2 visual and navigation pass
+
+Rebuild world data before running: `python tools/build_world.py` (default aerial texture now 8192; use `--texture-size 4096` on low memory). M or click minimap opens a searchable, pan/zoom city map; choose a road and teleport. Current street uses OSM names, not guessed names. Aerial map toggle uses the same orthophoto. Teleport targets only terrain-validated road segments. Materials are extracted from supplied texture ZIPs where possible; procedural facade modules, windows and roof texture with aerial-derived approximate roof colours are not photographic facade reconstructions. Roads have dense draping, opaque textured surfaces and approximate shoulders. This is not a surveyed sidewalk or road marking dataset. The original vegetation is still placeholder. No new full runtime test was possible in the connector environment.

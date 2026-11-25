@@ -6,7 +6,7 @@ import numpy as np
 import rasterio
 from rasterio.warp import reproject, Resampling, transform_bounds
 from rasterio.transform import from_origin
-from PIL import Image
+from PIL import Image, ImageDraw, ImageOps
 from pyproj import Transformer
 import pyogrio
 from shapely import from_wkb
@@ -71,10 +71,11 @@ def triangulate(face):
     ind=mapbox_earcut.triangulate_float64(np.ascontiguousarray(coords[:,keep]),np.cumsum([len(r) for r in rings],dtype=np.uint32))
     return coords[ind],abs(normal[2])/length
 def main():
-    p=argparse.ArgumentParser();p.add_argument("--step",type=float,default=6);p.add_argument("--texture-size",type=int,default=4096)
+    p=argparse.ArgumentParser();p.add_argument("--step",type=float,default=6);p.add_argument("--texture-size",type=int,default=8192)
     args=p.parse_args()
     if args.step<2 or args.texture_size<256: raise ValueError("Invalid resolution")
     OUT.mkdir(parents=True,exist_ok=True)
+    make_materials()
     (OUT/"manifest.json").unlink(missing_ok=True)
     # Fixed local origin, north is -Z. Grid is aligned to the requested geographic bounding box.
     w,s,e,n=transform_bounds("EPSG:4326",CRS,*BBOX,densify_pts=21)
@@ -148,12 +149,35 @@ def main():
                 low=float(allpts[:,2].min())
                 x,z=local((bw+be)/2,(bs+bn)/2)
                 wall=WALL[rng.integers(len(WALL))];roof=ROOF[rng.integers(len(ROOF))]
+                bh=float(allpts[:,2].max()-low)
+                # Approximate facade families. No source facade photographs are present.
+                family=1 if bh<9 and rng.random()<.65 else 2 if rng.random()<.28 else 0
+                # Sample actual roof colour from the aerial image, not a random palette.
+                samples=[]
+                for pts,slope in faces:
+                    if slope<.35 or pts[:,2].mean()<low+.5: continue
+                    for tri in pts.reshape(-1,3,3):
+                        ee,nn,_=tri.mean(axis=0)
+                        ix=int((ee-w)/(e-w)*tw);iy=int((n-nn)/(n-s)*th)
+                        if 0<=ix<tw and 0<=iy<th and mask[iy,ix]:
+                            samples.append(rgb[:,iy,ix]/255)
+                if samples:roof=np.clip(np.median(samples,axis=0),.12,.82)
                 key=(math.floor(x/500),math.floor(z/500))
                 for pts,slope in faces:
                     if slope>.5 and pts[:,2].max()<low+.15: continue
                     xyz=np.column_stack((pts[:,0]-cx,pts[:,2],cy-pts[:,1]))
-                    col=np.tile(roof if slope>.35 else wall,(len(pts),1))
-                    chunks[key].append(np.column_stack((xyz,col)).astype("<f4"))
+                    isroof=slope>.35
+                    col=np.tile(roof if isroof else wall,(len(pts),1))
+                    # Per-face planar metric UVs; windows use floor-relative height.
+                    if isroof:
+                        uv=xyz[:,[0,2]]/2.0
+                    else:
+                        horizontal=xyz[:,[0,2]]
+                        a=horizontal[np.argmax(np.linalg.norm(horizontal-horizontal[0],axis=1))]-horizontal[0]
+                        a=a/max(np.linalg.norm(a),1e-6)
+                        uv=np.column_stack(((horizontal-horizontal[0])@a/2.7,(xyz[:,1]-low)/2.8))
+                    kind=3 if isroof else family if bh>3.2 else 4
+                    chunks[key].append(np.column_stack((xyz,col,uv,np.full(len(pts),kind))).astype("<f4"))
                 footprints.append(box(bw-cx,cy-bn,be-cx,cy-bs));count+=1
         if not count: raise RuntimeError("No usable 3D buildings in this area; inspect GDB layers and CRS.")
         buildings=[]
@@ -184,7 +208,7 @@ def main():
             for line in parts(g,"LineString"):
                 pts=[[round(x,2),round(z,2)] for x,z,*_ in line.coords]
                 if len(pts)<2:continue
-                roads.append({"points":pts,"width":width,"type":highway,"name":prop.get("name","")})
+                roads.append({"points":pts,"width":width,"type":highway,"name":prop.get("name") or prop.get("name:et") or "", "surface":prop.get("surface",""),"ref":prop.get("ref","")})
                 if highway not in ("track","service") and line.length>20:
                     for a,b in zip(pts,pts[1:]):
                         x,z=(a[0]+b[0])/2,(a[1]+b[1])/2
@@ -208,15 +232,59 @@ def main():
                 if poly.contains(Point(xx,zz)) and tree_ok(xx,zz):
                     trees.append([xx,zz])
     trees=[[round(x,2),round(height(x,z),2),round(z,2),round(float(rng.uniform(5,13)),2)] for x,z in trees if tree_ok(x,z)]
+    # Export only validated on-ground road segments for teleportation.
+    for road in roads:
+        road["teleport"]=[i for i,(a,b) in enumerate(zip(road["points"],road["points"][1:])) if math.dist(a,b)>2 and valid_at(*a) and valid_at(*b) and valid_at((a[0]+b[0])/2,(a[1]+b[1])/2)]
     _,sx,sz,yaw=min(spawn_options)
     car=ROOT/"assets/cars/bmw_3-series_e36_street.glb"
     if not car.exists() or is_pointer(car):raise RuntimeError("Download the BMW GLB with git lfs pull.")
     shutil.copyfile(car,OUT/"car.glb")
-    manifest={"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
+    manifest={"version":2,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
       "terrainCoverage":round(float(valid.mean()),4),"orthoCoverage":round(float(mask.mean()),4),
       "buildings":buildings,"buildingCount":count,"roads":roads,"trees":trees,
       "spawn":[sx,height(sx,sz)+1.0,sz,yaw]}
     (OUT/"manifest.json").write_text(json.dumps(manifest,separators=(",",":")),encoding="utf-8")
     print(f"Built {count} buildings, {len(roads)} road segments, {len(trees)} trees, {nx}x{nz} height grid.")
     print("Map ready: npm run dev")
+def make_materials():
+    """Extract only usable images from supplied material archives; make repeated facade tiles."""
+    rng=np.random.default_rng(122)
+    def texture(prefix, fallback, gray=False):
+        matches=sorted((ROOT/"assets/textures").glob(prefix+"*.zip"))
+        for path in matches:
+            if is_pointer(path):continue
+            try:
+                with zipfile.ZipFile(path) as z:
+                    options=[n for n in z.namelist() if n.lower().endswith((".jpg",".jpeg",".png")) and any(s in n.lower() for s in ("color","diff","albedo","basecolor"))]
+                    if not options:continue
+                    with z.open(options[0]) as f:
+                        img=Image.open(f).convert("RGB").resize((512,512),Image.Resampling.LANCZOS)
+                    if gray:
+                        g=np.asarray(ImageOps.grayscale(img),dtype=np.float32)
+                        img=Image.fromarray(np.clip(205+(g-g.mean())*.65,80,250).astype(np.uint8)).convert("RGB")
+                    print("Material:",prefix,path.name);return img
+            except Exception as exc:print("Material fallback",prefix,str(exc))
+        v=np.clip(rng.normal(fallback,8,(512,512)),0,255).astype(np.uint8)
+        return Image.fromarray(v).convert("RGB")
+    def facade(name,src):
+        im=src.copy();d=ImageDraw.Draw(im)
+        # Repeating 2.7m x 2.8m facade module: glazing, frames, sill and shadow.
+        d.rectangle((150,105,362,367),fill=(65,65,61))
+        d.rectangle((157,110,355,359),fill=(215,213,199))
+        d.rectangle((170,123,342,346),fill=(38,55,64))
+        d.polygon([(170,123),(342,123),(342,180),(170,260)],fill=(72,90,102))
+        d.rectangle((250,123,260,346),fill=(185,183,169))
+        d.rectangle((170,220,342,229),fill=(185,183,169))
+        d.rectangle((145,350,368,368),fill=(168,166,150))
+        im.save(OUT/(name+".jpg"),quality=92)
+    plaster=texture("Plaster001",211,True)
+    wood=texture("WoodSiding001",195,True)
+    brick=texture("Bricks025",187,True)
+    facade("facade_plaster",plaster);facade("facade_wood",wood);facade("facade_brick",brick)
+    plaster.save(OUT/"wall_plain.jpg",quality=90)
+    texture("RoofingTiles001",195,True).save(OUT/"roof.jpg",quality=90)
+    texture("asphalt_03",80).save(OUT/"asphalt.jpg",quality=92)
+    texture("PavingStones144",155).save(OUT/"paving.jpg",quality=90)
+    texture("Grass001",110).save(OUT/"grass.jpg",quality=90)
+
 if __name__=="__main__":main()
