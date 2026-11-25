@@ -90,7 +90,7 @@ def compile_details(root,osm,project,bounds,ground,footprints,report):
         if historic=='castle' and 'haapsalu' in name.lower():castle_center=g.representative_point()
         if barrier in ('wall','retaining_wall','fence') or historic in ('citywalls','castle_wall'):
             castle=historic in ('citywalls','castle_wall') or 'linnus' in name.lower()
-            kind='fence' if barrier=='fence' else 'stone'
+            kind='wood' if barrier=='fence' and p.get('fence_type') in ('wood','wooden','palisade','board') else 'fence' if barrier=='fence' else 'stone'
             record_wall(g.boundary if g.geom_type in ('Polygon','MultiPolygon') else g,p,castle,kind)
         if p.get('landuse')=='cemetery' or p.get('amenity')=='grave_yard':
             if g.geom_type in ('Polygon','MultiPolygon'):cemetery_polys.append(g);add_area(g,'cemetery',name or 'Kalmistu')

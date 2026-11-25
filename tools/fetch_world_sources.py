@@ -36,19 +36,26 @@ def wfs():
             print(layer, len(fs), 'features',flush=True)
         except Exception as e:print('Layer failed:',layer,str(e),flush=True)
     return results
-def osm():
+def osm(extra=False):
     b='(58.92,23.49,58.96,23.59)'
     filters=['["barrier"]','["historic"]','["landuse"="cemetery"]','["amenity"="grave_yard"]','["amenity"="parking"]','["highway"~"^(footway|path|pedestrian|steps|cycleway)$"]','["leisure"~"^(park|garden|pitch)$"]','["man_made"="pier"]']
+    if extra:filters=['["highway"~"^(bus_stop|crossing|stop|give_way|traffic_signals|street_lamp)$"]','["traffic_sign"]','["public_transport"]','["amenity"~"^(bench|shelter)$"]','["barrier"="bollard"]','["shop"]["name"]','["building"]["name"]','["highway"]["name"="Posti"]','["highway"]["name"="Posti tänav"]','["highway"]["name"="Posti tn"]']
     q='[out:json][timeout:90];('+''.join('nwr'+f+b+';' for f in filters)+');out geom;'
     for endpoint in ('https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'):
         try:
             obj=json.loads(fetch(endpoint,post=urllib.parse.urlencode({'data':q}).encode()))
             if 'elements' not in obj:raise ValueError('No elements')
-            save('osm_details.json',obj);print('OSM additional objects:',len(obj['elements']),flush=True);return len(obj['elements'])
+            save('osm_street_objects.json' if extra else 'osm_details.json',obj);print('OSM street objects' if extra else 'OSM additional objects:',len(obj['elements']),flush=True);return len(obj['elements'])
         except Exception as e:print('OSM endpoint failed:',str(e),flush=True)
     return 0
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--osm-only',action='store_true');args=p.parse_args();OUT.mkdir(parents=True,exist_ok=True)
+    p=argparse.ArgumentParser();p.add_argument('--osm-only',action='store_true');p.add_argument('--street-only',action='store_true');args=p.parse_args();OUT.mkdir(parents=True,exist_ok=True)
+    if args.street_only:
+        from street_objects import fetch_stops
+        try:fetch_stops(ROOT)
+        except Exception as e:print('GTFS fetch failed:',e,flush=True)
+        if not osm(extra=True):raise SystemExit('No new OSM street objects retrieved')
+        return
     try:results={} if args.osm_only else wfs()
     except Exception as e:print('WFS discovery failed:',str(e),flush=True);results={}
     count=osm()

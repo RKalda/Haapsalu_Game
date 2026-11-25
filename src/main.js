@@ -3,6 +3,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
 import {Sky} from 'three/addons/objects/Sky.js';
+import {addStreetObjects} from './street_objects.js';
 
 const $=id=>document.getElementById(id);
 const root=import.meta.env.BASE_URL+'world/';
@@ -23,7 +24,7 @@ async function run(){
   status('Loading map manifest…');
   let m;
   try{m=await (await data('manifest.json')).json()}catch(e){throw Error('World not compiled. Run python tools/build_world.py from the project folder. '+e.message)}
-  if(m.version!==5)throw Error('Old world data. Re-run python tools/build_world.py.');
+  if(m.version!==6)throw Error('Old world data. Re-run python tools/build_world.py.');
   const [xmin,zmin,xmax,zmax]=m.bounds;
   const H=new Float32Array(await (await data('height.dat')).arrayBuffer());
   if(H.length!==m.nx*m.nz)throw Error('Height grid size does not match manifest');
@@ -151,8 +152,9 @@ async function run(){
   updateColliders(m.spawn[0],m.spawn[2]);streamAerial(m.spawn[0],m.spawn[2]);
 
   status('Generating roads from OpenStreetMap…');
-  const roadPositions=[],linePositions=[],pavingPositions=[],cobblePositions=[],pathPositions=[];
+  const roadPositions=[],linePositions=[],pavingPositions=[],cobblePositions=[],pathPositions=[],postiPositions=[];
   const [cobbleTex,masonryTex,cobbleNormal,masonryNormal]=await Promise.all([repeatTexture('cobble'),repeatTexture('masonry'),normalTexture('cobble'),normalTexture('masonry')]);
+  const [graniteTex,graniteNormal]=await Promise.all([repeatTexture('granite'),normalTexture('granite')]);
   function strip(a,b,width,out,offset,lateral=0){
     const dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);if(len<.01)return;
     const ox=-dz/len,oz=dx/len;
@@ -175,15 +177,18 @@ async function run(){
     const a=r.points[i-1],b=r.points[i],len=Math.hypot(b[0]-a[0],b[1]-a[1]);
     if(len<.01)continue;
     const cobble=['paving_stones','sett','cobblestone'].includes(r.surface);
-    strip(a,b,r.width,cobble?cobblePositions:roadPositions,.17);
-    if(i>1)cap(a,r.width/2,cobble?cobblePositions:roadPositions,.17);
+    const posti=/^posti(?:\\s+(?:tn\\.?|tänav))?$/i.test(r.name.trim());
+    const dst=posti?postiPositions:cobble?cobblePositions:roadPositions,level=posti?.215:.17;
+    strip(a,b,r.width,dst,level);
+    if(i>1)cap(a,r.width/2,dst,level);
     if(!cobble&&r.marking!=="no"&&r.width>=5.5&&!['track','service','living_street'].includes(r.type)){
       for(let t=0;t<len;t+=8){let q=Math.min(t+3,len);strip([lerp(a[0],b[0],t/len),lerp(a[1],b[1],t/len)],[lerp(a[0],b[0],q/len),lerp(a[1],b[1],q/len)],.10,linePositions,.19)}
     }
-    // Approximate paved shoulders only on larger roads, not every residential street.
-    if(['primary','secondary','tertiary'].includes(r.type)){
-      strip(a,b,1.2,pavingPositions,.12,r.width/2+.6);
-      strip(a,b,1.2,pavingPositions,.12,-r.width/2-.6);
+    // No blanket shoulders: explicit mapped sidewalk tags only; separately mapped paths take precedence visually.
+    for(const side of [-1,1]){
+      const tag=side===-1?r.sidewalkLeft:r.sidewalkRight;
+      const has=tag==='yes'||(!tag&&[side===-1?'left':'right','both','yes'].includes(r.sidewalk));
+      if(has)strip(a,b,1.6,pavingPositions,.10,side*(r.width/2+.8));
     }
   }
   function roadMesh(vertices,map,color,offset,scale=3,normal=null){
@@ -196,12 +201,18 @@ async function run(){
   roadMesh(roadPositions,asphaltTex,0xffffff,-2);
   roadMesh(pavingPositions,pavingTex,0xc4c1b6,-1);
   roadMesh(linePositions,null,0xe3e1ce,-4);
-  roadMesh(cobblePositions,cobbleTex,0xc6c6c6,-3,2.0,cobbleNormal);
+  roadMesh(cobblePositions,graniteTex,0xffffff,-3,2.0,graniteNormal);
+  roadMesh(postiPositions,graniteTex,0xffffff,-5,2.0,graniteNormal);
   const details=m.details||{walls:[],paths:[],areas:[],graves:[],pois:[]};
+  const pathStone=[],pathAsphalt=[],pathUnknown=[];
   for(const path of details.paths||[]){
-    for(let i=1;i<path.points.length;i++)strip(path.points[i-1],path.points[i],path.width,pathPositions,.095);
+    const dest=['sett','cobblestone'].includes(path.surface)?pathStone:path.surface==='asphalt'?pathAsphalt:['paving_stones','concrete','concrete:plates'].includes(path.surface)?pathPositions:pathUnknown;
+    if(dest===pathUnknown)continue; // keep the real aerial surface where material is unknown
+    for(let i=1;i<path.points.length;i++)strip(path.points[i-1],path.points[i],path.width,dest,.095);
   }
   roadMesh(pathPositions,pavingTex,0xc5c3b8,-1,2.2);
+  roadMesh(pathStone,graniteTex,0xffffff,-1,2,graniteNormal);
+  roadMesh(pathAsphalt,asphaltTex,0xbfc3c5,-1);
   // Land-use polygons are clipped to actual GIS outlines. Subdivide so they follow the DTM.
   function drapeTriangle(a,b,c,out,offset,depth=0){
     const edges=[Math.hypot(a[0]-b[0],a[1]-b[1]),Math.hypot(b[0]-c[0],b[1]-c[1]),Math.hypot(c[0]-a[0],c[1]-a[1])];
@@ -242,7 +253,7 @@ async function run(){
         const x0=lerp(a[0],b[0],j/count),z0=lerp(a[1],b[1],j/count),x1=lerp(a[0],b[0],(j+1)/count),z1=lerp(a[1],b[1],(j+1)/count);
         const x=(x0+x1)/2,z=(z0+z1)/2,key=Math.floor(x/128)+':'+Math.floor(z/128);
         if(!wallCells.has(key))wallCells.set(key,{x:Math.floor(x/128)*128+64,z:Math.floor(z/128)*128+64,stone:[],stoneUV:[],fence:[],fenceUV:[]});
-        const cell=wallCells.get(key),f=wall.kind==='fence',out=f?cell.fence:cell.stone,uv=f?cell.fenceUV:cell.stoneUV;
+        const cell=wallCells.get(key),f=wall.kind==='fence'||wall.kind==='wood',out=f?cell.fence:cell.stone,uv=f?cell.fenceUV:cell.stoneUV;
         const ox=-dz/len*wall.width/2,oz=dx/len*wall.width/2;
         const pts=[[x0-ox,z0-oz],[x1-ox,z1-oz],[x1+ox,z1+oz],[x0+ox,z0+oz]];
         const bottom=pts.map(([x,z])=>[x,ground(x,z)-.08,z]);
@@ -255,7 +266,8 @@ async function run(){
             const u=v.map(p=>[p[0],p[1]+.07,p[2]]);
             face(v[0],v[1],u[1],u[0],len/count,.07);
           }
-          for(const k of [0,1]){const p=bottom[k],q=bottom[(k+1)%4];const u=[p[0]+dx/len*.07,p[1],p[2]+dz/len*.07];face(p,u,[u[0],u[1]+h,u[2]],top[k],.07,h)}
+          const length=len/count,spacing=wall.kind==='wood'?.14:.18,bar=wall.kind==='wood'?.095:.035;
+          for(let v=0;v<length;v+=spacing){const t=v/length,p=bottom[0].map((q,i)=>lerp(q,bottom[1][i],t));const u=[p[0]+dx/len*bar,p[1],p[2]+dz/len*bar];face(p,u,[u[0],u[1]+h,u[2]],[p[0],p[1]+h,p[2]],bar,h)}
         }else{
           for(let k=0;k<4;k++){const n=(k+1)%4;face(bottom[k],bottom[n],top[n],top[k],Math.hypot(bottom[n][0]-bottom[k][0],bottom[n][2]-bottom[k][2])/1.6,wall.height/1.6)}
           face(top[0],top[1],top[2],top[3],len/count/1.6,wall.width/1.6);
@@ -279,6 +291,7 @@ async function run(){
   }
 
 
+  addStreetObjects(scene,m,ground,THREE);
   status('Planting measured trees and rendering water…');
   // Alpha-tested botanical foliage cards. Each cell is culled separately.
   const leafMaterials=await Promise.all(Array.from({length:6},(_,i)=>imageLoader.loadAsync(root+'foliage_'+Math.floor(i/3)+'_'+i%3+'.png').then(t=>{

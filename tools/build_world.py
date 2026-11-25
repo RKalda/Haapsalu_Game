@@ -18,6 +18,7 @@ from world_sources import BuildingInfo, measured_trees, aerial_tiles, foliage_sp
 from photo_facades import PhotoFacades, frame as wall_frame
 from topography import compile_details
 from aerial_facades import AerialFacades
+from street_objects import compile_street_objects, granite_setts, street_key
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "public/world"
@@ -80,6 +81,7 @@ def main(report):
     if args.step<2 or args.texture_size<256: raise ValueError("Invalid resolution")
     OUT.mkdir(parents=True,exist_ok=True)
     make_materials()
+    granite_setts(OUT)
     foliage_sprites(OUT)
     previous=json.loads((OUT/"manifest.json").read_text(encoding="utf-8")) if args.reuse_hd_tiles and (OUT/"manifest.json").exists() else {}
     (OUT/"manifest.json").unlink(missing_ok=True)
@@ -138,7 +140,7 @@ def main(report):
         gd=temp/"gdb";gd.mkdir();extract(gdbs[0],gd)
         db=next(gd.rglob("*.gdb"),None)
         if db is None: raise RuntimeError("Could not locate .gdb in archive")
-        chunks=defaultdict(list); footprints=[]; rng=np.random.default_rng(4729); count=0
+        chunks=defaultdict(list); footprints=[]; rng=np.random.default_rng(4729); count=0; landmark_walls=[]
         for layer,typ in pyogrio.list_layers(db):
             if not typ: continue
             info=pyogrio.read_info(db,layer=layer)
@@ -189,6 +191,14 @@ def main(report):
                     f=wall_frame(xyz,np.array([x,z]))
                     if f is not None:frames[fi]=f
                 selected=photos.select(bid,frames,x,z)
+                addr=str(row.get('ads_lahiaadress','')).lower().strip()
+                if addr in ('tallinna mnt 1','tallinna maantee 1') and frames:
+                    # Verified address; exact letter placement is not surveyed.
+                    for fi,f in frames.items():
+                        bearing,width,fh,u,yy=f
+                        if width<10 or fh<3:continue
+                        pts=faces[fi][0];xyz=np.column_stack((pts[:,0]-cx,pts[:,2],cy-pts[:,1]))
+                        landmark_walls.append(dict(name='KAUBAMAJA',center=xyz[:,[0,2]].mean(axis=0).tolist(),bearing=bearing,width=width,bottom=float(yy.min()),height=fh,etak_id=bid))
                 for fi,(pts,slope) in enumerate(faces):
                     if slope>.5 and pts[:,2].max()<low+.15: continue
                     xyz=np.column_stack((pts[:,0]-cx,pts[:,2],cy-pts[:,1]))
@@ -256,9 +266,9 @@ def main(report):
                 roadname=prop.get("name") or prop.get("name:et") or ""
                 surface=prop.get("surface","")
                 # Posti was reconstructed with stone setts (2022); Karja is also stone-paved.
-                if roadname.strip().lower() in ("posti","posti tänav","posti tn","karja","karja tänav","karja tn"):
+                if street_key(roadname) in ("posti","karja"):
                     surface="sett"
-                roads.append({"points":pts,"width":width,"type":highway,"name":roadname, "surface":surface,"ref":prop.get("ref",""),"lanes":prop.get("lanes",""),"marking":prop.get("lane_markings","")})
+                roads.append({"points":pts,"width":width,"type":highway,"name":roadname, "surface":surface,"ref":prop.get("ref",""),"lanes":prop.get("lanes",""),"marking":prop.get("lane_markings",""),"sidewalk":prop.get("sidewalk",""),"sidewalkLeft":prop.get("sidewalk:left",""),"sidewalkRight":prop.get("sidewalk:right","")})
                 if highway not in ("track","service") and line.length>20:
                     for a,b in zip(pts,pts[1:]):
                         x,z=(a[0]+b[0])/2,(a[1]+b[1])/2
@@ -280,6 +290,10 @@ def main(report):
         if prop.get("natural")=="wood" or prop.get("landuse")=="forest":
             forest.extend(parts(g,"Polygon"))
     details=compile_details(ROOT,osm,tolocal,bounds,height,footprints,report)
+    street_objects=compile_street_objects(ROOT,osm,tolocal,bounds,roads,report)
+    report['postiSegments']=sum(len(r['points'])-1 for r in roads if street_key(r['name'])=='posti')
+    report['postiLengthM']=round(sum(LineString(r['points']).length for r in roads if street_key(r['name'])=='posti'),1)
+    report['kaubamajaWallCandidates']=len(landmark_walls)
     if not roads or not spawn_options:raise RuntimeError("No valid drivable road in terrain coverage. Check tiles and OSM.")
     # Seeded forest sampling, avoiding real buildings and mapped streets.
     blocked=footprints+[LineString(r["points"]).buffer(r["width"]/2+2) for r in roads]
@@ -308,7 +322,7 @@ def main(report):
     if pine_asset:shutil.copyfile(pine,OUT/"pine.glb")
     report["pineAssetAvailable"]=pine_asset
     report["waterTriangles"]=len(water)//3
-    manifest={"version":5,"details":details,"facadeAtlases":photo_atlases,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
+    manifest={"version":6,"details":details,"streetObjects":street_objects,"landmarkWalls":landmark_walls,"facadeAtlases":photo_atlases,"buildingStride":9,"bounds":bounds,"origin":CENTER,"nx":nx,"nz":nz,"dx":dx,"dz":dz,
       "terrainCoverage":round(float(valid.mean()),4),"orthoCoverage":round(float(mask.mean()),4),
       "buildings":buildings,"buildingCount":count,"roads":roads,"trees":trees,"aerialTiles":tiles,"pineAsset":pine_asset,"water":water,"crossings":crossings,
       "spawn":[sx,height(sx,sz)+1.0,sz,yaw]}
