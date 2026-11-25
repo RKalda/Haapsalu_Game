@@ -10,19 +10,31 @@ PILOT=(23.530,58.939,23.553,58.952)
 WORLD=(23.490,58.920,23.590,58.960)
 API='https://graph.mapillary.com/'
 SEARCH='id,geometry,computed_geometry,captured_at,compass_angle,computed_compass_angle,is_pano,sequence,creator'
-DETAIL='id,geometry,computed_geometry,captured_at,compass_angle,computed_compass_angle,is_pano,sequence,camera_type,camera_parameters,computed_rotation,computed_altitude,altitude,width,height,exif_orientation,thumb_2048_url'
+DETAIL='id,geometry,computed_geometry,captured_at,compass_angle,computed_compass_angle,sequence,camera_type,camera_parameters,computed_rotation,computed_altitude,altitude,width,height,exif_orientation,thumb_2048_url'
+MINIMAL='id,thumb_2048_url'
+EXTRA_FIELDS=DETAIL.split(',')[1:-1]+['creator']
 def write(path,data):
     tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(path)
 def api(token,path,params):
-    url=API+path+'?'+urllib.parse.urlencode(params)
-    req=urllib.request.Request(url,headers={'Authorization':'OAuth '+token,'User-Agent':'HaapsaluDrive/0.7'})
+    url=API+path+'?'+urllib.parse.urlencode({**params,'access_token':token})
+    req=urllib.request.Request(url,headers={'User-Agent':'HaapsaluDrive/0.9'})
     for attempt in range(4):
         try:
             with urllib.request.urlopen(req,timeout=45) as f:result=json.load(f)
             if 'error' in result:raise RuntimeError('Mapillary returned API error')
             return result
         except urllib.error.HTTPError as e:
-            if e.code not in (429,500,502,503,504) or attempt==3:raise RuntimeError(f'Mapillary API HTTP {e.code} on {path}') from None
+            if e.code not in (429,500,502,503,504) or attempt==3:
+                try:
+                    err=json.loads(e.read(65536)).get('error',{})
+                    msg=str(err.get('message','')).replace(token,'[REDACTED]').replace(urllib.parse.quote(token,safe=''),'[REDACTED]')
+                    # Never log URLs or arbitrary server response bodies.
+                    import re
+                    msg=re.sub(r'https?://\S+','[URL]',msg)
+                    msg=re.sub(r'MLY\|[^\s,;]+','[REDACTED]',msg)
+                    detail=f"code={err.get('code','?')}, subcode={err.get('error_subcode','?')}: {msg[:300]}"
+                except Exception:detail='No parseable API error message'
+                raise RuntimeError(f'Mapillary API HTTP {e.code} on {path}: {detail}') from None
         except (TimeoutError,urllib.error.URLError):
             if attempt==3:raise RuntimeError(f'Mapillary request failed on {path}') from None
         time.sleep(2**attempt)
@@ -31,6 +43,35 @@ def coords(row):
     g=row.get('computed_geometry') or row.get('geometry') or {}
     p=g.get('coordinates',[])
     return tuple(p[:2]) if len(p)>=2 else None
+
+def negotiate_fields(token,ident):
+    """Verify the simplest request first, then find the supported metadata fields once."""
+    basic=api(token,ident,{'fields':MINIMAL})
+    if not basic.get('thumb_2048_url'):raise RuntimeError('Basic Graph request returned no thumbnail URL')
+    print('Graph preflight passed: image URL available',flush=True)
+    accepted=MINIMAL.split(',')
+    wanted=list(dict.fromkeys(EXTRA_FIELDS))
+    try:
+        detail=api(token,ident,{'fields':','.join(accepted+wanted)})
+        return ','.join(accepted+wanted),detail,[]
+    except RuntimeError as e:
+        print('Full metadata request rejected:',str(e),flush=True)
+    rejected=[]
+    def probe(group):
+        if not group:return
+        try:
+            api(token,ident,{'fields':','.join(accepted+group)})
+            accepted.extend(group)
+        except RuntimeError as e:
+            if 'HTTP 400' not in str(e):raise
+            if len(group)==1:
+                rejected.append(group[0]);print('Unsupported metadata field:',group[0],flush=True)
+            else:
+                mid=len(group)//2;probe(group[:mid]);probe(group[mid:])
+    probe(wanted)
+    fields=','.join(accepted)
+    return fields,api(token,ident,{'fields':fields}),rejected
+
 def search(token,bbox):
     # Same public image coverage tiles used by Mapillary's own API demo.
     import mercantile,mapbox_vector_tile,gzip
@@ -97,7 +138,7 @@ def main():
     catalog=folder/'catalog.json'
     if a.image_id:
         if not a.image_id.isdigit():raise SystemExit('Image ID must be numeric')
-        rows=[api(token,a.image_id,{'fields':'id,geometry,computed_geometry,captured_at,is_pano,compass_angle'})]
+        rows=[api(token,a.image_id,{'fields':'id,geometry,computed_geometry,captured_at,compass_angle'})]
     else:
         cached=json.loads(catalog.read_text(encoding='utf-8')) if catalog.exists() and not a.refresh else []
         rows=cached or search(token,PILOT if a.area=='pilot' else WORLD)
@@ -105,7 +146,15 @@ def main():
     picked=select(rows,a.max_images,a.spacing)
     years=Counter(time.strftime('%Y',time.gmtime(r['captured_at']/1000)) for r in rows if r.get('captured_at'))
     report={'area':a.area,'imagesFound':len(rows),'panoramas':sum(bool(r.get('is_pano')) for r in rows),'captureYears':dict(years),'selected':len(picked),'downloaded':0,'withCameraParameters':0,'withComputedRotation':0,'withComputedGeometry':0,'withCreator':0,'errors':[]}
-    if not a.metadata_only:
+    if not a.metadata_only and picked:
+        first_id=str(picked[0]['id'])
+        try:
+            fields,first,rejected=negotiate_fields(token,first_id)
+        except RuntimeError as e:
+            report['preflightError']=str(e);write(folder/'coverage_report.json',report)
+            raise SystemExit('Stopped before bulk download: '+str(e)) from None
+        report['graphFields']=fields;report['rejectedFields']=rejected
+        consecutive=0
         for i,row in enumerate(picked,1):
             ident=str(row['id'])
             if not ident.isdigit():continue
@@ -113,8 +162,7 @@ def main():
             try:
                 if dst.exists() and meta.exists() and not a.refresh:d=json.loads(meta.read_text(encoding='utf-8'))
                 else:
-                    try:d=api(token,ident,{'fields':DETAIL+',creator'})
-                    except RuntimeError:d=api(token,ident,{'fields':DETAIL})
+                    d=dict(first) if ident==first_id else api(token,ident,{'fields':fields})
                     url=d.pop('thumb_2048_url',None)
                     if not url or not url.startswith('https://'):raise RuntimeError('No HTTPS image URL')
                     req=urllib.request.Request(url,headers={'User-Agent':'HaapsaluDrive/0.7'})
@@ -123,10 +171,15 @@ def main():
                     tmp=dst.with_suffix('.tmp');tmp.write_bytes(raw);tmp.replace(dst)
                     d={**row,**d,'source':'https://www.mapillary.com/app/?pKey='+ident,'license':'CC BY-SA 4.0 (verify applicable image terms)'}
                     write(meta,d)
+                consecutive=0
                 report['downloaded']+=1
                 for key,field in [('withCameraParameters','camera_parameters'),('withComputedRotation','computed_rotation'),('withComputedGeometry','computed_geometry'),('withCreator','creator')]:
                     report[key]+=int(bool(d.get(field)))
-            except Exception as e:report['errors'].append({'id':ident,'error':type(e).__name__,'detail':str(e) if isinstance(e,RuntimeError) else 'Request or decode failed'})
+            except Exception as e:
+                consecutive+=1
+                report['errors'].append({'id':ident,'error':type(e).__name__,'detail':str(e) if isinstance(e,RuntimeError) else 'Request or decode failed'})
+                if consecutive>=5:
+                    print('Stopped after 5 consecutive failures; check report.',flush=True);break
             if i%10==0 or i==len(picked):
                 write(folder/'coverage_report.json',report);print(i,'/',len(picked),'downloaded:',report['downloaded'],flush=True)
             time.sleep(.15)
